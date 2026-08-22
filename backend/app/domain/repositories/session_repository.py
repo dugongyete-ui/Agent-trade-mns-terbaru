@@ -55,8 +55,10 @@ class SessionRepository(Protocol):
         """Update the status of a session"""
         ...
     
-    async def update_unread_message_count(self, session_id: str, count: int) -> None:
-        """Update the unread message count of a session"""
+    async def update_unread_message_count(
+        self, session_id: str, user_id: str, count: int
+    ) -> None:
+        """Update unread count only for a session owned by the user."""
         ...
     
     async def increment_unread_message_count(self, session_id: str) -> None:
@@ -67,8 +69,21 @@ class SessionRepository(Protocol):
         """Decrement the unread message count of a session"""
         ...
     
-    async def update_shared_status(self, session_id: str, is_shared: bool) -> None:
-        """Update the shared status of a session"""
+    async def update_shared_status(
+        self,
+        session_id: str,
+        user_id: str,
+        is_shared: bool,
+        share_token_hash: Optional[str] = None,
+        share_expires_at: Optional[datetime] = None,
+    ) -> None:
+        """Update sharing state only for an owned session."""
+        ...
+
+    async def find_shared_by_token(
+        self, session_id: str, share_token_hash: str
+    ) -> Optional[Session]:
+        """Find a shared session by its opaque token hash."""
         ...
     
     async def delete(self, session_id: str) -> None:

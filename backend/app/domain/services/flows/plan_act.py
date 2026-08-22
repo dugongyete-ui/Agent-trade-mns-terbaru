@@ -12,6 +12,7 @@ from app.domain.models.event import (
     TitleEvent,
     ToolEvent,
     ToolStatus,
+    WaitEvent,
 )
 from langchain.messages import HumanMessage as LCHumanMessage
 from app.domain.models.plan import ExecutionStatus
@@ -301,8 +302,19 @@ class PlanActFlow(BaseFlow):
                     f"Agent {self._agent_id} executing step {step.id} "
                     f"[{total_steps_executed + 1}/{self._max_steps}]: {step.description[:60]}..."
                 )
+                waiting_for_user = False
                 async for event in self.executor.execute_step(self.plan, step, message):
                     yield event
+                    if isinstance(event, WaitEvent):
+                        waiting_for_user = True
+
+                if waiting_for_user:
+                    logger.info(
+                        "Agent %s is waiting for user input at step %s",
+                        self._agent_id,
+                        step.id,
+                    )
+                    return
 
                 # Record step in AgentHistoryList
                 total_steps_executed += 1

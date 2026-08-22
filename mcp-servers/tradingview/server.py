@@ -76,7 +76,24 @@ def _apply_proxy_patches() -> None:
     )
 
 
+def _install_mcp2_fastmcp_compat() -> None:
+    """Bridge tradingview-mcp 0.9.x's old import to MCP 2.0's MCPServer."""
+    try:
+        from mcp.server.fastmcp import FastMCP  # type: ignore  # noqa: F401
+        return
+    except ImportError:
+        pass
+
+    import types
+    from mcp.server.mcpserver import MCPServer
+
+    compat = types.ModuleType("mcp.server.fastmcp")
+    compat.FastMCP = MCPServer
+    sys.modules["mcp.server.fastmcp"] = compat
+
+
 if __name__ == "__main__":
+    _install_mcp2_fastmcp_compat()
     if TV_PROXY_BASE:
         _apply_proxy_patches()
     else:

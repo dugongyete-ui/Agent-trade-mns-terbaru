@@ -8,6 +8,7 @@ import logging
 import hashlib
 import hmac
 import urllib.parse
+import uuid
 from app.infrastructure.storage.redis import get_redis
 
 logger = logging.getLogger(__name__)
@@ -55,9 +56,13 @@ class TokenService:
         payload = {
             "sub": user.id,  # Subject (user ID)
             "fullname": user.fullname,
+            "email": user.email,
+            "role": user.role.value,
+            "is_active": user.is_active,
             "iat": int(now.timestamp()),  # Issued at (timestamp)
             "exp": int(expire.timestamp()),  # Expiration time (timestamp)
-            "type": "refresh"
+            "type": "refresh",
+            "jti": uuid.uuid4().hex,
         }
         
         try:
@@ -183,9 +188,12 @@ class TokenService:
             raise
 
     def revoke_token(self, token: str) -> bool:
-        """Revoke token (sync stub — use async_revoke_token in async contexts)"""
-        logger.warning("revoke_token() called synchronously — token NOT blacklisted; call async_revoke_token() instead")
-        return True
+        """Synchronous compatibility shim; async callers must use async_revoke_token."""
+        logger.error(
+            "revoke_token() cannot safely update the async blacklist; "
+            "call async_revoke_token() instead"
+        )
+        return False
 
     async def async_revoke_token(self, token: str) -> bool:
         """Revoke a token by adding it to the Redis blacklist with TTL = remaining lifetime."""
@@ -214,18 +222,26 @@ class TokenService:
             redis = get_redis()
             return await redis.client.exists(key) > 0
         except Exception as e:
-            logger.warning("Failed to check token blacklist (fail-open): %s", e)
-            return False
+            # A blacklist outage must not turn revoked/unknown token state into
+            # authenticated access. Callers will return 401 until Redis recovers.
+            logger.error("Failed to check token blacklist; rejecting token: %s", e)
+            return True
 
-    async def async_verify_access_token(self, token: str) -> Optional[Dict[str, Any]]:
-        """Verify access token and check the Redis revocation blacklist."""
-        payload = self.verify_access_token(token)
-        if payload is None:
+    async def async_verify_token_type(
+        self, token: str, expected_type: str
+    ) -> Optional[Dict[str, Any]]:
+        """Verify a JWT type and enforce the Redis revocation blacklist."""
+        payload = self.verify_token(token)
+        if payload is None or payload.get("type") != expected_type:
             return None
         if await self.async_is_blacklisted(token):
             logger.warning("Token is blacklisted (revoked)")
             return None
         return payload
+
+    async def async_verify_access_token(self, token: str) -> Optional[Dict[str, Any]]:
+        """Verify an access token and check the Redis revocation blacklist."""
+        return await self.async_verify_token_type(token, "access")
 
     def create_signed_url(self, base_url: str, expire_minutes: int = 60) -> str:
         """Create URL with signature for resource access

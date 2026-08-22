@@ -33,11 +33,6 @@ export interface ListSessionResponse {
     sessions: ListSessionItem[];
 }
 
-export interface FileViewResponse {
-    content: string;
-    file: string;
-}
-
 export interface SignedUrlResponse {
     signed_url: string;
     expires_in: number;
@@ -46,6 +41,8 @@ export interface SignedUrlResponse {
 export interface ShareSessionResponse {
     session_id: string;
     is_shared: boolean;
+    share_token?: string;
+    expires_at?: number;
 }
 
 export interface SharedSessionResponse {

@@ -1,7 +1,7 @@
 // Backend API service
 import { apiClient, ApiResponse, createSSEConnection, SSECallbacks } from './client';
 import { AgentSSEEvent } from '../types/event';
-import { CreateSessionResponse, GetSessionResponse, FileViewResponse, ListSessionResponse, ShareSessionResponse, SharedSessionResponse } from '../types/response';
+import { CreateSessionResponse, GetSessionResponse, ListSessionResponse, ShareSessionResponse, SharedSessionResponse } from '../types/response';
 import type { FileInfo } from './file';
 
 
@@ -73,20 +73,6 @@ export const chatWithSession = async (
   );
 };
 
-/**
- * View file content
- * @param sessionId Session ID
- * @param file File path
- * @returns File content
- */
-export async function viewFile(sessionId: string, file: string): Promise<FileViewResponse> {
-  const response = await apiClient.post<ApiResponse<FileViewResponse>>(
-    `/sessions/${sessionId}/file`,
-    { file }
-  );
-  return response.data.data;
-}
-
 export async function getSessionFiles(sessionId: string): Promise<FileInfo[]> {
   const response = await apiClient.get<ApiResponse<FileInfo[]>>(`/sessions/${sessionId}/files`);
   return response.data.data;
@@ -150,12 +136,18 @@ export async function unshareSession(sessionId: string): Promise<ShareSessionRes
  * }
  * ```
  */
-export async function getSharedSession(sessionId: string): Promise<SharedSessionResponse> {
-  const response = await apiClient.get<ApiResponse<SharedSessionResponse>>(`/sessions/shared/${sessionId}`);
+export async function getSharedSession(sessionId: string, shareToken: string): Promise<SharedSessionResponse> {
+  const params = new URLSearchParams({ share_token: shareToken });
+  const response = await apiClient.get<ApiResponse<SharedSessionResponse>>(
+    `/sessions/shared/${encodeURIComponent(sessionId)}?${params.toString()}`
+  );
   return response.data.data;
 }
 
-export async function getSharedSessionFiles(sessionId: string): Promise<FileInfo[]> {
-  const response = await apiClient.get<ApiResponse<FileInfo[]>>(`/sessions/${sessionId}/share/files`);
+export async function getSharedSessionFiles(sessionId: string, shareToken: string): Promise<FileInfo[]> {
+  const params = new URLSearchParams({ share_token: shareToken });
+  const response = await apiClient.get<ApiResponse<FileInfo[]>>(
+    `/sessions/${encodeURIComponent(sessionId)}/share/files?${params.toString()}`
+  );
   return response.data.data;
 }

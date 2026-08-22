@@ -122,5 +122,5 @@ docker-compose-test.yml
 # Frontend whitelist
 !frontend/src/lib/
 
-uv.lock
+# Keep backend/uv.lock tracked for reproducible Python installs.
 specs

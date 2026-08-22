@@ -20,9 +20,8 @@ from datetime import datetime, timezone
 import requests
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
-app = Server("sentiment-mcp")
 
 TIMEOUT = 10
 CACHE_TTL = 300  # 5 minutes
@@ -84,7 +83,6 @@ PERIOD_MAP = {
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
-@app.list_tools()
 async def list_tools() -> list[Tool]:
     return [
         Tool(
@@ -206,7 +204,6 @@ async def list_tools() -> list[Tool]:
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
 
-@app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
         if name == "sentiment-ls-ratio":
@@ -483,6 +480,17 @@ async def _fear_greed(args: dict) -> str:
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
+
+async def _handle_list_tools(_context, _params):
+    return ListToolsResult(tools=await list_tools())
+
+
+async def _handle_call_tool(_context, params):
+    return CallToolResult(content=await call_tool(params.name, params.arguments or {}))
+
+
+app = Server("sentiment-mcp", on_list_tools=_handle_list_tools, on_call_tool=_handle_call_tool)
+
 
 async def main():
     async with stdio_server() as (read_stream, write_stream):

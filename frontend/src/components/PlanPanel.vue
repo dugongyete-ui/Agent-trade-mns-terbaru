@@ -28,6 +28,7 @@
             <div v-for="step in plan.steps" :key="step.id"
               class="flex items-start gap-2.5 w-full px-4 py-2 truncate">
               <StepSuccessIcon v-if="step.status === 'completed'" />
+              <XCircle v-else-if="step.status === 'failed'" class="relative top-[1px] flex-shrink-0 text-red-500" :size="16" />
               <span v-else-if="step.status === 'skipped'"
                 class="relative top-[1px] flex h-4 w-4 flex-shrink-0 items-center justify-center text-xs text-[var(--text-tertiary)]">—</span>
               <Clock v-else class="relative top-[2px] flex-shrink-0" :size="16" />
@@ -48,7 +49,8 @@
         <div class="w-full" style="height: 36px; --offset: -36px;">
           <div class="w-full">
             <div class="flex items-start gap-2.5 w-full px-4 py-2 truncate">
-              <StepSuccessIcon v-if="isCompleted" />
+              <XCircle v-if="isFailed" class="relative top-[2px] flex-shrink-0 text-red-500" :size="16" />
+              <StepSuccessIcon v-else-if="isCompleted" />
               <Clock v-else class="relative top-[2px] flex-shrink-0" :size="16" />
               <div class="flex flex-col w-full gap-[2px] truncate">
                 <div class="text-sm truncate" :title="currentStep" style="color: var(--text-tertiary);">
@@ -77,7 +79,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { ChevronUp, ChevronDown, Clock, X } from 'lucide-vue-next';
+import { ChevronUp, ChevronDown, Clock, X, XCircle } from 'lucide-vue-next';
 import StepSuccessIcon from './icons/StepSuccessIcon.vue';
 import type { PlanEventData } from '../types/event';
 
@@ -98,16 +100,23 @@ const togglePanel = () => {
 
 const planProgress = computed((): string => {
   const finishedSteps = props.plan?.steps.filter(step =>
-    step.status === 'completed' || step.status === 'skipped'
+    step.status === 'completed' || step.status === 'failed' || step.status === 'skipped'
   ).length ?? 0;
   return `${finishedSteps} / ${props.plan?.steps.length ?? 1}`;
 });
 
+const isFailed = computed((): boolean => {
+  return props.plan?.status === 'failed'
+    || (props.plan?.steps.some(step => step.status === 'failed') ?? false);
+});
+
 const isCompleted = computed((): boolean => {
-  return props.plan?.status === 'completed'
-    || (props.plan?.steps.every(step =>
-      step.status === 'completed' || step.status === 'skipped'
-    ) ?? false);
+  return !isFailed.value && (
+    props.plan?.status === 'completed'
+      || (props.plan?.steps.every(step =>
+        step.status === 'completed' || step.status === 'skipped'
+      ) ?? false)
+  );
 });
 
 const currentStep = computed((): string => {
@@ -116,7 +125,7 @@ const currentStep = computed((): string => {
       return step.description;
     }
   }
-  return t('Task Completed');
+  return isFailed.value ? 'Task Failed' : t('Task Completed');
 });
 </script>
 

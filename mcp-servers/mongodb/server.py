@@ -13,7 +13,7 @@ from typing import Any
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 try:
     from pymongo import MongoClient
@@ -24,7 +24,6 @@ except ImportError:
 
 MONGODB_URI = os.environ.get("MONGODB_URI", "")
 
-app = Server("mongodb-mcp")
 _client = None
 
 
@@ -49,7 +48,6 @@ def serialize(obj):
     return obj
 
 
-@app.list_tools()
 async def list_tools() -> list[Tool]:
     return [
         Tool(
@@ -163,7 +161,6 @@ def get_db(database: str = ""):
     return client[db_name]
 
 
-@app.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     try:
         db = get_db(arguments.get("database", ""))
@@ -225,6 +222,17 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         text = f"Error: {type(e).__name__}: {e}"
 
     return [TextContent(type="text", text=text)]
+
+
+async def _handle_list_tools(_context, _params):
+    return ListToolsResult(tools=await list_tools())
+
+
+async def _handle_call_tool(_context, params):
+    return CallToolResult(content=await call_tool(params.name, params.arguments or {}))
+
+
+app = Server("mongodb-mcp", on_list_tools=_handle_list_tools, on_call_tool=_handle_call_tool)
 
 
 async def main():

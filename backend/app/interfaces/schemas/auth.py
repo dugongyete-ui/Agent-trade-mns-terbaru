@@ -188,4 +188,5 @@ class AuthStatusResponse(BaseModel):
 class RefreshTokenResponse(BaseModel):
     """Refresh token response schema"""
     access_token: str
-    token_type: str = "bearer" 
+    refresh_token: str
+    token_type: str = "bearer"

@@ -1,5 +1,6 @@
 import os
 import json
+from pathlib import Path
 import logging
 from pydantic import Field
 from pydantic_settings import BaseSettings
@@ -24,6 +25,9 @@ def _parse_extra_headers() -> dict | None:
 
 class Settings(BaseSettings):
     
+    # Runtime environment
+    environment: str = "development"
+
     # Model provider configuration
     api_key: str | None = None
     api_base: str | None = None
@@ -62,15 +66,20 @@ class Settings(BaseSettings):
     planner_api_key: str | None = None
 
     # Agent step limit — env var: MAX_STEPS
-    max_steps: int = Field(default=100, alias="max_steps")
+    max_steps: int = Field(default=100, alias="max_steps", ge=1, le=500)
 
     # How many consecutive failed steps before the loop skips to SUMMARIZING.
     # Increase if tasks involve many optional tool calls that may legitimately fail.
     # env var: MAX_CONSECUTIVE_FAILURES
-    max_consecutive_failures: int = Field(default=2, alias="max_consecutive_failures")
+    max_consecutive_failures: int = Field(default=2, alias="max_consecutive_failures", ge=1, le=20)
 
     # Agent behavior
     conversation_save_path: str | None = None    # dir to save conversation logs, e.g. "/tmp/conversations"
+    max_upload_bytes: int = Field(default=25 * 1024 * 1024, ge=1, le=250 * 1024 * 1024)
+    max_attachment_extract_bytes: int = Field(default=10 * 1024 * 1024, ge=1, le=50 * 1024 * 1024)
+    max_attachment_extract_chars: int = Field(default=120_000, ge=1_000, le=1_000_000)
+    max_filename_length: int = Field(default=255, ge=32, le=1024)
+    share_token_expire_days: int = Field(default=7, ge=1, le=30)
     extend_system_message: str | None = None     # extra instructions appended to all agent system prompts
 
     # Search engine configuration
@@ -87,7 +96,7 @@ class Settings(BaseSettings):
     # Auth configuration
     auth_provider: str = "password"  # "password", "none", "local"
     password_salt: str | None = None
-    password_hash_rounds: int = 100000
+    password_hash_rounds: int = 600000
     password_hash_algorithm: str = "pbkdf2_sha256"
     local_auth_email: str = "admin@example.com"
     local_auth_password: str = "admin"
@@ -112,7 +121,7 @@ class Settings(BaseSettings):
     ssl_verify: bool = True
 
     # MCP configuration
-    mcp_config_path: str = "/home/runner/workspace/mcp.json"
+    mcp_config_path: str = str(Path(__file__).resolve().parents[3] / "mcp.json")
     
     # Logging configuration
     log_level: str = "INFO"
@@ -123,14 +132,26 @@ class Settings(BaseSettings):
         extra = "ignore"
         
     def check_required_settings(self):
-        """Validate configuration settings"""
+        """Validate configuration settings and reject unsafe production defaults."""
         if not self.api_key:
             raise ValueError("API key is required")
+
+        environment = self.environment.strip().lower()
+        production = environment in {"production", "prod"}
         if self.jwt_secret_key == "your-secret-key-here":
-            logger.warning(
-                "JWT_SECRET_KEY is using the default insecure value. "
-                "Set the JWT_SECRET_KEY environment variable to a strong random secret."
-            )
+            message = "JWT_SECRET_KEY is using the default insecure value."
+            if production:
+                raise ValueError(message + " Set a strong random secret before production startup.")
+            logger.warning(message + " Set JWT_SECRET_KEY outside development.")
+
+        if production and self.auth_provider == "none":
+            raise ValueError("AUTH_PROVIDER=none is not allowed in production")
+        if production and self.allowed_origins.strip() == "*":
+            raise ValueError("ALLOWED_ORIGINS=* is not allowed in production")
+        if production and self.auth_provider == "local" and self.local_auth_password == "admin":
+            raise ValueError("Default local authentication password is not allowed in production")
+        if production and not (self.password_salt or "").strip() and self.auth_provider == "password":
+            raise ValueError("PASSWORD_SALT is required for password authentication in production")
 
 @lru_cache()
 def get_settings() -> Settings:

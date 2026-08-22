@@ -96,7 +96,7 @@ const { showFilePanel } = useFilePanel();
 const { visible, hideSessionFileList, shared } = useSessionFileList();
 
 const imageExtensions = new Set([
-    'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico', 'tiff', 'tif', 'heic', 'heif',
+    'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'ico', 'tiff', 'tif', 'heic', 'heif',
 ]);
 
 function isImageFile(filename: string): boolean {
@@ -111,7 +111,12 @@ const fetchFiles = async (sessionId: string) => {
     if (!sessionId) return;
     let response: FileInfo[] = [];
     if (shared.value) {
-        response = await getSharedSessionFiles(sessionId);
+        const shareToken = String(route.query.share_token || '');
+        if (!shareToken) {
+            files.value = [];
+            return;
+        }
+        response = await getSharedSessionFiles(sessionId, shareToken);
     } else {
         response = await getSessionFiles(sessionId);
     }
@@ -120,7 +125,7 @@ const fetchFiles = async (sessionId: string) => {
 
 const downloadFile = async (fileInfo: FileInfo) => {
     const url = await getFileDownloadUrl(fileInfo);
-    window.open(url, '_blank');
+    window.open(url, '_blank', 'noopener,noreferrer');
 };
 
 const showFile = (file: FileInfo) => {

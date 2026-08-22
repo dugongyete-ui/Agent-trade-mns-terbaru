@@ -13,14 +13,13 @@ from typing import Any
 import redis as redis_lib
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
 REDIS_DB = int(os.environ.get("REDIS_DB", 0))
 
-app = Server("redis-mcp")
 _client = None
 
 
@@ -40,7 +39,6 @@ def get_client():
     return _client
 
 
-@app.list_tools()
 async def list_tools() -> list[Tool]:
     return [
         Tool(
@@ -127,7 +125,6 @@ async def list_tools() -> list[Tool]:
     ]
 
 
-@app.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     try:
         r = get_client()
@@ -262,6 +259,17 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         text = f"Error: {type(e).__name__}: {e}"
 
     return [TextContent(type="text", text=text)]
+
+
+async def _handle_list_tools(_context, _params):
+    return ListToolsResult(tools=await list_tools())
+
+
+async def _handle_call_tool(_context, params):
+    return CallToolResult(content=await call_tool(params.name, params.arguments or {}))
+
+
+app = Server("redis-mcp", on_list_tools=_handle_list_tools, on_call_tool=_handle_call_tool)
 
 
 async def main():

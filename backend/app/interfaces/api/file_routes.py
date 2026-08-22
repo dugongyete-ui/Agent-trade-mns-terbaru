@@ -15,7 +15,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/files", tags=["files"])
 
-_INLINE_MIME_PREFIXES = ("image/", "video/", "audio/", "text/plain", "application/pdf")
+_INLINE_MIME_TYPES = frozenset({
+    "image/png", "image/jpeg", "image/gif", "image/webp", "image/avif",
+    "video/mp4", "video/webm", "audio/mpeg", "audio/ogg", "audio/wav",
+    "text/plain", "application/pdf",
+})
 
 def _resolve_media_type(content_type: str | None, filename: str | None) -> str:
     """Return the best Content-Type for a file, falling back to mimetypes detection."""
@@ -31,7 +35,7 @@ def _disposition(media_type: str, filename: str | None) -> str:
     """Use inline for browser-renderable types, attachment otherwise."""
     import urllib.parse
     encoded = urllib.parse.quote(filename or "file", safe='')
-    if any(media_type.startswith(p) for p in _INLINE_MIME_PREFIXES):
+    if media_type.lower() in _INLINE_MIME_TYPES:
         return f'inline; filename*=UTF-8\'\'{encoded}'
     return f'attachment; filename*=UTF-8\'\'{encoded}'
 

@@ -24,10 +24,18 @@ const props = defineProps<{
     file: FileInfo;
 }>();
 
+const escapeAttribute = (value: string): string => value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/[\r\n]/g, ' ');
+
 const renderer = new Renderer();
 renderer.link = ({ href, title, text }: { href: string; title?: string | null; text: string }) => {
-    const titleAttr = title ? ` title="${title}"` : '';
-    return `<a href="${href}" target="_blank" rel="noopener noreferrer"${titleAttr}>${text}</a>`;
+    const safeHref = escapeAttribute(href || '#');
+    const titleAttr = title ? ` title="${escapeAttribute(title)}"` : '';
+    return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer"${titleAttr}>${text}</a>`;
 };
 
 const renderedContent = computed(() => {
@@ -40,7 +48,6 @@ const renderedContent = computed(() => {
         }) as string;
         return DOMPurify.sanitize(html, {
             ADD_ATTR: ['target', 'rel'],
-            ADD_TAGS: ['iframe'],
         });
     } catch (error) {
         console.error('Failed to render markdown:', error);

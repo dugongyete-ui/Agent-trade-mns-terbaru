@@ -88,14 +88,14 @@ class ExecutionAgent(BaseAgent):
                 # correct final status once the LLM produces its text response.
                 logger.debug(f"Step {step.id} tool error (handled by LLM retry): {event.error}")
             elif isinstance(event, MessageEvent):
-                step.status = ExecutionStatus.COMPLETED
                 parsed_response = await self._parse_json(event.message)
                 if parsed_response is None:
                     logger.warning("Execution agent returned non-JSON response for step result")
                     step.success = False
                     step.result = event.message or "No result returned."
                     step.error = "LLM returned a non-JSON response."
-                    yield StepEvent(status=StepStatus.COMPLETED, step=step)
+                    step.status = ExecutionStatus.FAILED
+                    yield StepEvent(status=StepStatus.FAILED, step=step)
                     return
                 if isinstance(parsed_response, list):
                     # LLM returned a list (e.g. raw tool-call objects) instead of
@@ -108,6 +108,7 @@ class ExecutionAgent(BaseAgent):
                     )
                     step.success = True
                     step.result = json.dumps(parsed_response, ensure_ascii=False)
+                    step.status = ExecutionStatus.COMPLETED
                     yield StepEvent(status=StepStatus.COMPLETED, step=step)
                     return
                 try:
@@ -122,12 +123,22 @@ class ExecutionAgent(BaseAgent):
                         if not isinstance(parsed_response, str)
                         else parsed_response
                     )
+                    step.status = ExecutionStatus.COMPLETED
                     yield StepEvent(status=StepStatus.COMPLETED, step=step)
                     return
                 step.success = new_step.success
                 step.result = new_step.result
+                step.error = new_step.error
                 step.attachments = new_step.attachments
-                yield StepEvent(status=StepStatus.COMPLETED, step=step)
+                step.status = (
+                    ExecutionStatus.COMPLETED
+                    if step.success
+                    else ExecutionStatus.FAILED
+                )
+                yield StepEvent(
+                    status=StepStatus.COMPLETED if step.success else StepStatus.FAILED,
+                    step=step,
+                )
                 return
             elif isinstance(event, ToolEvent):
                 if event.function_name == "message_ask_user":
@@ -308,8 +319,8 @@ class ExecutionAgent(BaseAgent):
                 + "\n\n[CORRECTION — MANDATORY]: You reported this step as complete without "
                 "calling any market analysis tools. You MUST actually call the required tools "
                 "to gather real market data — do NOT fabricate or assume results. "
-                "Start by calling message_notify_user to narrate your approach, then call "
-                "the market tools one by one. "
+                "Send at most one concise progress update if useful, then call "
+                "the market tools needed for this step. "
                 "Only return the final JSON result after completing all tool calls."
             )
             try:
@@ -366,7 +377,12 @@ class ExecutionAgent(BaseAgent):
 
             yield MessageEvent(role="assistant", message=_msg)
 
-        step.status = ExecutionStatus.COMPLETED
+        if step.status not in {ExecutionStatus.FAILED, ExecutionStatus.SKIPPED}:
+            step.status = (
+                ExecutionStatus.COMPLETED
+                if step.success
+                else ExecutionStatus.FAILED
+            )
 
     def _extract_text_from_json(self, text: str) -> str:
         """If LLM returned JSON wrapper instead of plain markdown, extract the text field."""

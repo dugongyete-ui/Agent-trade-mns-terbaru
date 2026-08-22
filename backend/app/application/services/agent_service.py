@@ -1,6 +1,8 @@
 from typing import AsyncGenerator, Optional, List
+import hashlib
 import logging
-from datetime import datetime
+import secrets
+from datetime import datetime, timedelta, timezone
 from app.domain.models.session import Session, SessionSummary
 from app.domain.repositories.session_repository import SessionRepository
 from app.domain.models.agent import Agent
@@ -15,6 +17,7 @@ from app.domain.models.file import FileInfo
 from app.core.config import get_settings
 from app.domain.repositories.mcp_repository import MCPRepository
 from app.domain.models.session import SessionStatus
+from app.application.errors.exceptions import BadRequestError, NotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +59,42 @@ class AgentService:
         agent = Agent(
             model_name=settings.model_name,
             temperature=settings.temperature,
-            max_tokens=settings.max_tokens,
+            max_tokens=settings.max_tokens or 2000,
         )
         logger.info(f"Created new Agent with ID: {agent.id}")
         await self._agent_repository.save(agent)
         logger.info(f"Agent created successfully with ID: {agent.id}")
         return agent
+
+    async def _persist_attachments(
+        self,
+        session_id: str,
+        user_id: str,
+        attachments: Optional[List[dict]],
+    ) -> None:
+        """Attach uploaded files to an owned session exactly once.
+
+        The chat payload contains only file IDs and browser metadata. The
+        storage lookup is authoritative and owner-bound; client-supplied names
+        and sizes are never persisted as session file metadata.
+        """
+        if not attachments:
+            return
+        session = await self._session_repository.find_by_id_and_user_id(session_id, user_id)
+        if not session:
+            raise NotFoundError("Session not found")
+        known_file_ids = {file_info.file_id for file_info in session.files}
+        for attachment in attachments:
+            file_id = attachment.get("file_id") if isinstance(attachment, dict) else None
+            if not file_id or not isinstance(file_id, str):
+                raise BadRequestError("Invalid attachment")
+            if file_id in known_file_ids:
+                continue
+            file_info = await self._file_storage.get_file_info(file_id, user_id)
+            if not file_info:
+                raise NotFoundError("File not found")
+            await self._session_repository.add_file(session_id, file_info)
+            known_file_ids.add(file_id)
 
     async def chat(
         self,
@@ -73,6 +106,7 @@ class AgentService:
         attachments: Optional[List[dict]] = None
     ) -> AsyncGenerator[AgentEvent, None]:
         logger.info(f"Starting chat with session {session_id}: {(message or '')[:50]}...")
+        await self._persist_attachments(session_id, user_id, attachments)
         async for event in self._agent_domain_service.chat(session_id, user_id, message, timestamp, event_id, attachments):
             logger.debug(f"Received event: {event}")
             yield event
@@ -118,7 +152,10 @@ class AgentService:
 
     async def clear_unread_message_count(self, session_id: str, user_id: str) -> None:
         logger.info(f"Clearing unread message count for session {session_id} for user {user_id}")
-        await self._session_repository.update_unread_message_count(session_id, 0)
+        session = await self._session_repository.find_by_id_and_user_id(session_id, user_id)
+        if not session:
+            raise RuntimeError("Session not found")
+        await self._session_repository.update_unread_message_count(session_id, user_id, 0)
         logger.info(f"Unread message count cleared for session {session_id}")
 
     async def shutdown(self):
@@ -133,39 +170,61 @@ class AgentService:
             raise RuntimeError("Session not found")
         return session.files
 
-    async def get_shared_session_files(self, session_id: str) -> List[FileInfo]:
-        logger.info(f"Getting files for shared session {session_id}")
-        session = await self._session_repository.find_by_id(session_id)
-        if not session or not session.is_shared:
-            logger.error(f"Shared session {session_id} not found or not shared")
+    @staticmethod
+    def _hash_share_token(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    async def get_shared_session_files(
+        self, session_id: str, share_token: str
+    ) -> List[FileInfo]:
+        logger.info("Getting files for shared session %s", session_id)
+        session = await self.get_shared_session(session_id, share_token)
+        if not session:
+            logger.error("Shared session %s not found or token invalid", session_id)
             raise RuntimeError("Session not found")
         return session.files
 
-    async def share_session(self, session_id: str, user_id: str) -> None:
-        logger.info(f"Sharing session {session_id} for user {user_id}")
+    async def share_session(self, session_id: str, user_id: str) -> str:
+        logger.info("Sharing session %s for user %s", session_id, user_id)
         session = await self._session_repository.find_by_id_and_user_id(session_id, user_id)
         if not session:
-            logger.error(f"Session {session_id} not found for user {user_id}")
+            logger.error("Session %s not found for user %s", session_id, user_id)
             raise RuntimeError("Session not found")
-        await self._session_repository.update_shared_status(session_id, True)
-        logger.info(f"Session {session_id} shared successfully")
+
+        token = secrets.token_urlsafe(32)
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            days=get_settings().share_token_expire_days
+        )
+        await self._session_repository.update_shared_status(
+            session_id,
+            user_id,
+            True,
+            self._hash_share_token(token),
+            expires_at,
+        )
+        logger.info("Session %s shared successfully", session_id)
+        return token
 
     async def unshare_session(self, session_id: str, user_id: str) -> None:
-        logger.info(f"Unsharing session {session_id} for user {user_id}")
+        logger.info("Unsharing session %s for user %s", session_id, user_id)
         session = await self._session_repository.find_by_id_and_user_id(session_id, user_id)
         if not session:
-            logger.error(f"Session {session_id} not found for user {user_id}")
+            logger.error("Session %s not found for user %s", session_id, user_id)
             raise RuntimeError("Session not found")
-        await self._session_repository.update_shared_status(session_id, False)
-        logger.info(f"Session {session_id} unshared successfully")
+        await self._session_repository.update_shared_status(
+            session_id, user_id, False, None, None
+        )
+        logger.info("Session %s unshared successfully", session_id)
 
-    async def get_shared_session(self, session_id: str) -> Optional[Session]:
-        logger.info(f"Getting shared session {session_id}")
-        session = await self._session_repository.find_by_id(session_id)
-        if not session or not session.is_shared:
-            logger.error(f"Shared session {session_id} not found or not shared")
+    async def get_shared_session(
+        self, session_id: str, share_token: str
+    ) -> Optional[Session]:
+        logger.info("Getting shared session %s", session_id)
+        if not share_token:
             return None
-        return session
+        return await self._session_repository.find_shared_by_token(
+            session_id, self._hash_share_token(share_token)
+        )
 
     async def is_session_shared(self, session_id: str) -> bool:
         logger.info(f"Checking if session {session_id} is shared")

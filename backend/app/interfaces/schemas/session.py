@@ -1,15 +1,23 @@
-from pydantic import BaseModel
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
+from pydantic import BaseModel, Field, field_validator
 from app.interfaces.schemas.event import AgentSSEEvent
 from app.domain.models.session import SessionStatus
 
 
 class ChatRequest(BaseModel):
-    """Chat request schema"""
+    """Bounded chat request schema for the agent boundary."""
     timestamp: Optional[int] = None
-    message: Optional[str] = None
-    attachments: Optional[List[dict]] = None
-    event_id: Optional[str] = None
+    message: Optional[str] = Field(default=None, max_length=20_000)
+    attachments: Optional[List[Dict[str, Any]]] = Field(default=None, max_length=10)
+    event_id: Optional[str] = Field(default=None, max_length=128)
+
+    @field_validator("message")
+    @classmethod
+    def normalize_message(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
 
 
 class CreateSessionResponse(BaseModel):
@@ -46,6 +54,8 @@ class ShareSessionResponse(BaseModel):
     """Share session response schema"""
     session_id: str
     is_shared: bool
+    share_token: Optional[str] = None
+    expires_at: Optional[int] = None
 
 
 class SharedSessionResponse(BaseModel):

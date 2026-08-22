@@ -181,6 +181,7 @@ async def refresh_token(
     
     return APIResponse.success(RefreshTokenResponse(
         access_token=token_result.access_token,
+        refresh_token=token_result.refresh_token,
         token_type=token_result.token_type
     ))
 

@@ -178,15 +178,18 @@ class MongoSessionRepository(SessionRepository):
         if not result:
             raise ValueError(f"Session {session_id} not found")
 
-    async def update_unread_message_count(self, session_id: str, count: int) -> None:
-        """Update the unread message count of a session"""
+    async def update_unread_message_count(
+        self, session_id: str, user_id: str, count: int
+    ) -> None:
+        """Update unread count only for a session owned by the user."""
         result = await SessionDocument.find_one(
-            SessionDocument.session_id == session_id
+            SessionDocument.session_id == session_id,
+            SessionDocument.user_id == user_id,
         ).update(
             {"$set": {"unread_message_count": count, "updated_at": datetime.now(UTC)}}
         )
         if not result:
-            raise ValueError(f"Session {session_id} not found")
+            raise ValueError(f"Session {session_id} not found for user {user_id}")
 
     async def increment_unread_message_count(self, session_id: str) -> None:
         """Atomically increment the unread message count of a session"""
@@ -208,13 +211,45 @@ class MongoSessionRepository(SessionRepository):
         if not result:
             raise ValueError(f"Session {session_id} not found")
 
-    async def update_shared_status(self, session_id: str, is_shared: bool) -> None:
-        """Update the shared status of a session"""
+    async def update_shared_status(
+        self,
+        session_id: str,
+        user_id: str,
+        is_shared: bool,
+        share_token_hash: Optional[str] = None,
+        share_expires_at: Optional[datetime] = None,
+    ) -> None:
+        """Update sharing state only for an owned session."""
         result = await SessionDocument.find_one(
-            SessionDocument.session_id == session_id
-        ).update(
-            {"$set": {"is_shared": is_shared, "updated_at": datetime.now(UTC)}}
-        )
+            SessionDocument.session_id == session_id,
+            SessionDocument.user_id == user_id,
+        ).update({
+            "$set": {
+                "is_shared": is_shared,
+                "share_token_hash": share_token_hash,
+                "share_expires_at": share_expires_at,
+                "updated_at": datetime.now(UTC),
+            }
+        })
         if not result:
-            raise ValueError(f"Session {session_id} not found")
+            raise ValueError(f"Session {session_id} not found for user {user_id}")
+
+    async def find_shared_by_token(
+        self, session_id: str, share_token_hash: str
+    ) -> Optional[Session]:
+        """Find a shared, non-expired session by opaque token hash."""
+        mongo_session = await SessionDocument.find_one(
+            SessionDocument.session_id == session_id,
+            SessionDocument.is_shared == True,
+            SessionDocument.share_token_hash == share_token_hash,
+        )
+        if not mongo_session:
+            return None
+        if mongo_session.share_expires_at:
+            expires_at = mongo_session.share_expires_at
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=UTC)
+            if expires_at <= datetime.now(UTC):
+                return None
+        return mongo_session.to_domain()
 

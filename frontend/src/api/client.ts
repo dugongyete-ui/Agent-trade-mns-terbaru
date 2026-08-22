@@ -2,7 +2,13 @@
 import axios, { AxiosError } from 'axios';
 import { fetchEventSource, EventSourceMessage } from '@microsoft/fetch-event-source';
 import { router } from '@/main';
-import { clearStoredTokens, getStoredToken, getStoredRefreshToken, storeToken } from './auth';
+import {
+  clearStoredTokens,
+  getStoredToken,
+  getStoredRefreshToken,
+  storeRefreshToken,
+  storeToken,
+} from './auth';
 
 // API configuration
 export const API_CONFIG = {
@@ -120,9 +126,15 @@ const refreshAuthToken = async (): Promise<string | null> => {
       __isRefreshRequest: true
     } as any);
     
-    if (response.data && response.data.data) {
-      const newAccessToken = response.data.data.access_token;
+    const refreshData = response.data?.data;
+    if (
+      refreshData &&
+      typeof refreshData.access_token === 'string' &&
+      typeof refreshData.refresh_token === 'string'
+    ) {
+      const newAccessToken = refreshData.access_token;
       storeToken(newAccessToken);
+      storeRefreshToken(refreshData.refresh_token);
       
       // Update default headers
       apiClient.defaults.headers.Authorization = `Bearer ${newAccessToken}`;

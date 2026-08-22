@@ -3,6 +3,7 @@ from typing import Any, Union, Literal, Dict, Optional, List, Self, Type
 from datetime import datetime
 from dataclasses import dataclass
 from app.domain.models.plan import ExecutionStatus, Step
+from app.domain.models.event import PlanStatus
 from app.interfaces.schemas.file import FileInfoResponse
 from app.domain.models.event import ToolStatus, ToolContent
 from app.domain.models.event import (

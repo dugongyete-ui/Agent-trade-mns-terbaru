@@ -106,7 +106,6 @@ import { ToolContent, StepContent } from '../types/message';
 import { useRelativeTime } from '../composables/useTime';
 import { Bot } from 'lucide-vue-next';
 import AttachmentsMessage from './AttachmentsMessage.vue';
-import { viewFile } from '../api/agent';
 
 marked.use(markedHighlight({
   emptyLangClass: 'hljs',
@@ -156,20 +155,28 @@ const cleanLinkText = (href: string, text: string): string => {
   return text;
 };
 
+const escapeAttribute = (value: string): string => value
+  .replace(/&/g, '&amp;')
+  .replace(/"/g, '&quot;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/[\r\n]/g, ' ');
+
 const renderer = new marked.Renderer();
 
-renderer.link = ({ href, title: _title, text }: { href: string; title?: string | null; text: string }) => {
-  if (href && isSandboxPath(href)) {
-    return `<a href="#" data-sandbox-file="${href}" title="${href}" class="sandbox-file-link">${text}</a>`;
+renderer.link = ({ href, text }: { href: string; title?: string | null; text: string }) => {
+  const displayText = cleanLinkText(href, text);
+  if (!href || isSandboxPath(href)) {
+    return `<span class="sandbox-file-reference">${displayText}</span>`;
   }
-  return `<a href="${href}" target="_blank" rel="noopener noreferrer" title="${href}">${cleanLinkText(href, text)}</a>`;
+  return `<a href="${escapeAttribute(href)}" target="_blank" rel="noopener noreferrer" title="${escapeAttribute(href)}">${displayText}</a>`;
 };
 
 renderer.code = ({ text, lang }: { text: string; lang?: string }) => {
   const language = lang && hljs.getLanguage(lang) ? lang : 'plaintext';
   const highlighted = hljs.highlight(text, { language }).value;
-  const langLabel = lang ? `<span class="md-code-lang">${lang}</span>` : '';
-  const copyBtn = `<button class="md-code-copy" onclick="navigator.clipboard.writeText(this.closest('.md-code-block').querySelector('code').innerText)" title="Copy">⎘</button>`;
+  const langLabel = lang ? `<span class="md-code-lang">${escapeAttribute(lang)}</span>` : '';
+  const copyBtn = `<button class="md-code-copy" data-copy-code="${escapeAttribute(text)}" title="Copy" type="button">⎘</button>`;
   return `<div class="md-code-block"><div class="md-code-header">${langLabel}${copyBtn}</div><pre><code class="hljs language-${language}">${highlighted}</code></pre></div>`;
 };
 
@@ -203,30 +210,22 @@ renderer.table = (token: any) => {
 const renderMarkdown = (text: string) => {
   if (typeof text !== 'string') return '';
   const html = marked(text, { renderer, gfm: true, breaks: true }) as string;
-  return DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'data-sandbox-file', 'onclick', 'title'], FORCE_BODY: true });
+  return DOMPurify.sanitize(html, {
+    ADD_ATTR: ['target', 'data-copy-code', 'title'],
+    FORBID_ATTR: ['style', 'onclick', 'onerror', 'onload', 'onmouseover', 'onfocus', 'onblur'],
+    FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'textarea', 'select', 'option', 'svg', 'math'],
+    FORCE_BODY: true,
+  });
 };
 
 const handleMarkdownClick = async (event: MouseEvent) => {
   const target = event.target as HTMLElement;
-  const anchor = target.closest('a[data-sandbox-file]') as HTMLAnchorElement | null;
-  if (!anchor) return;
-  event.preventDefault();
-  const filePath = anchor.getAttribute('data-sandbox-file');
-  if (!filePath || !props.sessionId) return;
+  const copyButton = target.closest('button[data-copy-code]') as HTMLButtonElement | null;
+  if (!copyButton) return;
   try {
-    const result = await viewFile(props.sessionId, filePath);
-    const filename = filePath.split('/').pop() || 'file';
-    const blob = new Blob([result.content], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  } catch (e) {
-    console.error('Failed to download sandbox file:', e);
+    await navigator.clipboard.writeText(copyButton.dataset.copyCode ?? '');
+  } catch (error) {
+    console.error('Failed to copy code block:', error);
   }
 };
 </script>
@@ -240,18 +239,8 @@ const handleMarkdownClick = async (event: MouseEvent) => {
   transition-duration: .3s;
 }
 
-.sandbox-file-link {
-  color: var(--text-brand);
-  text-decoration: underline;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.sandbox-file-link::before {
-  content: "⬇";
-  font-size: 0.75em;
-  opacity: 0.7;
+.sandbox-file-reference {
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
 }
 </style>

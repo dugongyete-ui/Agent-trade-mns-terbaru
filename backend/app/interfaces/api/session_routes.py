@@ -5,7 +5,6 @@ from sse_starlette.event import ServerSentEvent
 from datetime import datetime
 import asyncio
 import logging
-from app.interfaces.dependencies import get_file_service
 
 from app.application.services.agent_service import AgentService
 from app.application.services.token_service import TokenService
@@ -18,6 +17,7 @@ from app.interfaces.schemas.session import (
     ShareSessionResponse, SharedSessionResponse
 )
 from app.interfaces.schemas.event import EventMapper
+from app.interfaces.schemas.file import FileInfoResponse
 from app.domain.models.file import FileInfo
 from app.domain.models.user import User
 
@@ -165,12 +165,10 @@ async def chat(
 @router.get("/{session_id}/files")
 async def get_session_files(
     session_id: str,
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User = Depends(get_current_user),
     agent_service: AgentService = Depends(get_agent_service)
 ) -> APIResponse[List[FileInfo]]:
-    if not current_user and not await agent_service.is_session_shared(session_id):
-        raise UnauthorizedError()
-    files = await agent_service.get_session_files(session_id, current_user.id if current_user else None)
+    files = await agent_service.get_session_files(session_id, current_user.id)
     return APIResponse.success(files)
 
 
@@ -180,21 +178,27 @@ async def share_session(
     current_user: User = Depends(get_current_user),
     agent_service: AgentService = Depends(get_agent_service)
 ) -> APIResponse[ShareSessionResponse]:
-    await agent_service.share_session(session_id, current_user.id)
+    share_token = await agent_service.share_session(session_id, current_user.id)
+    session = await agent_service.get_session(session_id, current_user.id)
     return APIResponse.success(ShareSessionResponse(
         session_id=session_id,
-        is_shared=True
+        is_shared=True,
+        share_token=share_token,
+        expires_at=int(session.share_expires_at.timestamp()) if session and session.share_expires_at else None,
     ))
 
 @router.get("/{session_id}/share/files")
 async def get_shared_session_files(
     session_id: str,
+    share_token: str = Query(..., min_length=32, max_length=256),
     agent_service: AgentService = Depends(get_agent_service)
-) -> APIResponse[List[FileInfo]]:
-    files = await agent_service.get_shared_session_files(session_id)
-    for file in files:
-        await get_file_service().enrich_with_file_url(file)
-    return APIResponse.success(files)
+) -> APIResponse[List[FileInfoResponse]]:
+    files = await agent_service.get_shared_session_files(session_id, share_token)
+    redacted_files = [
+        await FileInfoResponse.from_file_info(file_info)
+        for file_info in files
+    ]
+    return APIResponse.success(redacted_files)
 
 
 @router.delete("/{session_id}/share", response_model=APIResponse[ShareSessionResponse])
@@ -213,9 +217,10 @@ async def unshare_session(
 @router.get("/shared/{session_id}", response_model=APIResponse[SharedSessionResponse])
 async def get_shared_session(
     session_id: str,
+    share_token: str = Query(..., min_length=32, max_length=256),
     agent_service: AgentService = Depends(get_agent_service)
 ) -> APIResponse[SharedSessionResponse]:
-    session = await agent_service.get_shared_session(session_id)
+    session = await agent_service.get_shared_session(session_id, share_token)
     if not session:
         raise NotFoundError("Shared session not found")
 

@@ -72,13 +72,13 @@ class GridFSFileStorage(FileStorage):
             bucket = self._get_gridfs_bucket()
             
             # Prepare metadata
-            file_metadata = {
+            file_metadata = dict(metadata or {})
+            # Server-owned fields are assigned last and cannot be overridden by callers.
+            file_metadata.update({
                 'filename': filename,
-                'uploadDate': datetime.utcnow(),
-                'user_id': user_id,  # Store user_id in metadata
-                **(metadata or {})
-            }
-            
+                'uploadDate': datetime.now(timezone.utc),
+                'user_id': user_id,
+            })
             if content_type:
                 file_metadata['contentType'] = content_type
             

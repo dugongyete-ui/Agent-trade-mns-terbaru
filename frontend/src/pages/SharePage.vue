@@ -120,6 +120,7 @@ import { copyToClipboard } from '../utils/dom'
 
 const router = useRouter()
 const { t } = useI18n()
+const shareToken = computed(() => String(router.currentRoute.value.query.share_token || ''))
 const { showSessionFileList } = useSessionFileList()
 const { hideFilePanel } = useFilePanel()
 
@@ -320,15 +321,15 @@ const resetState = () => {
 };
 
 const replay = async () => {
-  if (!sessionId.value) {
-    showErrorToast(t('Session not found'));
+  if (!sessionId.value || !shareToken.value) {
+    showErrorToast(t('Shared link is invalid or expired'));
     return;
   }
   hideFilePanel();
   toolPanel.value?.hideToolPanel();
   resetState();
   sessionId.value = String(router.currentRoute.value.params.sessionId) as string;
-  const session = await agentApi.getSharedSession(sessionId.value);
+  const session = await agentApi.getSharedSession(sessionId.value, shareToken.value);
   realTime.value = true;
   isLoading.value = true;
   for (const event of session.events) {
@@ -342,11 +343,11 @@ const replay = async () => {
 }
 
 const restoreSession = async () => {
-  if (!sessionId.value) {
-    showErrorToast(t('Session not found'));
+  if (!sessionId.value || !shareToken.value) {
+    showErrorToast(t('Shared link is invalid or expired'));
     return;
   }
-  const session = await agentApi.getSharedSession(sessionId.value);
+  const session = await agentApi.getSharedSession(sessionId.value, shareToken.value);
   realTime.value = false;
   follow.value = false; // Prevent auto-scrolling during restoration
   for (const event of session.events) {
@@ -431,8 +432,8 @@ const handleFileListShow = () => {
 }
 
 const handleCopyLink = async () => {
-  if (!sessionId.value) return;
-  const shareUrl = `${window.location.origin}/share/${sessionId.value}`;
+  if (!sessionId.value || !shareToken.value) return;
+  const shareUrl = `${window.location.origin}/share/${encodeURIComponent(sessionId.value)}?token=${encodeURIComponent(shareToken.value)}`;
 
   try {
     const success = await copyToClipboard(shareUrl);

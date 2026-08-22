@@ -179,8 +179,9 @@ export function useAuth() {
     try {
       const response = await apiRefreshToken({ refresh_token: refreshToken })
       
-      // Store new access token
+      // Store both rotated tokens. The previous refresh token is no longer valid.
       storeToken(response.access_token)
+      storeRefreshToken(response.refresh_token)
       setAuthToken(response.access_token)
       
       return true

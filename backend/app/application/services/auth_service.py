@@ -221,29 +221,56 @@ class AuthService:
         )
     
     async def refresh_access_token(self, refresh_token: str) -> AuthToken:
-        """Refresh access token using refresh token"""
-        payload = self.token_service.verify_token(refresh_token)
-        
+        """Refresh access token and rotate the one-time refresh token."""
+        payload = await self.token_service.async_verify_token_type(refresh_token, "refresh")
         if not payload:
-            raise UnauthorizedError("Invalid refresh token")
-        
-        if payload.get("type") != "refresh":
-            raise UnauthorizedError("Invalid token type")
-        
-        # Get user from database
+            raise UnauthorizedError("Invalid or revoked refresh token")
+
+        # Password-provider users are reloaded so deactivated accounts cannot
+        # refresh. The local provider intentionally has no database user; bind
+        # that token to the configured local credentials instead.
         user_id = payload.get("sub")
-        user = await self.user_repository.get_user_by_id(user_id)
-        
-        if not user or not user.is_active:
-            raise UnauthorizedError("User not found or inactive")
-        
-        # Generate new access token
+        if self.settings.auth_provider == "local":
+            if (
+                user_id != "local_admin"
+                or payload.get("email") != self.settings.local_auth_email
+                or payload.get("is_active") is not True
+            ):
+                raise UnauthorizedError("Invalid local refresh token")
+            user = User(
+                id="local_admin",
+                fullname="Local Admin",
+                email=self.settings.local_auth_email,
+                role=UserRole.ADMIN,
+                is_active=True,
+            )
+        elif self.settings.auth_provider == "none":
+            user = User(
+                id="anonymous",
+                fullname="anonymous",
+                email="anonymous@localhost",
+                role=UserRole.USER,
+                is_active=True,
+            )
+        else:
+            user = await self.user_repository.get_user_by_id(user_id)
+            if not user or not user.is_active:
+                raise UnauthorizedError("User not found or inactive")
+
+        # Refresh tokens are one-time capabilities. Revoke before issuing the
+        # replacement; a Redis failure therefore fails closed.
+        if not await self.token_service.async_revoke_token(refresh_token):
+            raise UnauthorizedError("Refresh token rotation unavailable")
+
         new_access_token = self.token_service.create_access_token(user)
-        
+        new_refresh_token = self.token_service.create_refresh_token(user)
+
         return AuthToken(
             access_token=new_access_token,
-            token_type="bearer"
+            refresh_token=new_refresh_token,
+            token_type="bearer",
         )
+
     
     async def verify_token(self, token: str) -> Optional[User]:
         """Verify JWT access token and return user.

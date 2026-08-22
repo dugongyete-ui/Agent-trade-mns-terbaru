@@ -17,9 +17,8 @@ from zoneinfo import ZoneInfo
 import requests
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
-app = Server("economic-calendar-mcp")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -419,7 +418,6 @@ def _handle_find_event(args: dict) -> str:
 
 # ── MCP Tool Definitions ──────────────────────────────────────────────────────
 
-@app.list_tools()
 async def list_tools() -> list[Tool]:
     return [
         Tool(
@@ -541,7 +539,6 @@ async def list_tools() -> list[Tool]:
     ]
 
 
-@app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
         if   name == "calendar-today":       text = _handle_today(arguments)
@@ -559,6 +556,17 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         text = f"Economic Calendar Error: {type(e).__name__}: {e}"
 
     return [TextContent(type="text", text=text)]
+
+
+async def _handle_list_tools(_context, _params):
+    return ListToolsResult(tools=await list_tools())
+
+
+async def _handle_call_tool(_context, params):
+    return CallToolResult(content=await call_tool(params.name, params.arguments or {}))
+
+
+app = Server("economic-calendar-mcp", on_list_tools=_handle_list_tools, on_call_tool=_handle_call_tool)
 
 
 async def main():

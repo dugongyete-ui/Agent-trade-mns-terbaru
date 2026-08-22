@@ -9,16 +9,19 @@ from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
-app = Server("time-mcp")
 
+# Session hours are expressed in each venue's local time. ZoneInfo then
+# applies daylight-saving rules where relevant instead of fixed UTC offsets.
 FOREX_SESSIONS = {
-    "Sydney":    {"open": 22, "close": 7,  "tz": "Australia/Sydney"},
-    "Tokyo":     {"open": 0,  "close": 9,  "tz": "Asia/Tokyo"},
-    "London":    {"open": 8,  "close": 17, "tz": "Europe/London"},
-    "New York":  {"open": 13, "close": 22, "tz": "America/New_York"},
+    "Sydney":    {"open": 7, "close": 16, "tz": "Australia/Sydney"},
+    "Tokyo":     {"open": 9, "close": 18, "tz": "Asia/Tokyo"},
+    "London":    {"open": 8, "close": 17, "tz": "Europe/London"},
+    "New York":  {"open": 8, "close": 17, "tz": "America/New_York"},
 }
+
+NEW_YORK_TZ = ZoneInfo("America/New_York")
 
 TIMEZONES = {
     "WIB":  "Asia/Jakarta",
@@ -40,29 +43,31 @@ def get_utc_now() -> datetime:
 
 def forex_market_status() -> dict:
     now_utc = get_utc_now()
-    utc_hour = now_utc.hour
-    utc_minute = now_utc.minute
-    utc_decimal = utc_hour + utc_minute / 60
-    weekday = now_utc.weekday()
+    now_new_york = now_utc.astimezone(NEW_YORK_TZ)
+
+    # Retail FX is closed from Friday 17:00 New York through Sunday 17:00
+    # New York. This boundary naturally follows New York DST transitions.
+    ny_weekday = now_new_york.weekday()
+    weekend = (
+        (ny_weekday == 4 and now_new_york.hour >= 17)
+        or ny_weekday == 5
+        or (ny_weekday == 6 and now_new_york.hour < 17)
+    )
 
     sessions = {}
     active = []
-
-    if weekday >= 5:
-        return {"weekend": True, "sessions": {}, "active": [], "overlaps": []}
-
-    for name, s in FOREX_SESSIONS.items():
-        o, c = s["open"], s["close"]
-        if o < c:
-            is_open = o <= utc_decimal < c
-        else:
-            is_open = utc_decimal >= o or utc_decimal < c
-
-        local_tz = ZoneInfo(s["tz"])
-        local_time = now_utc.astimezone(local_tz).strftime("%H:%M %Z")
-        sessions[name] = {"open": is_open, "local_time": local_time}
-        if is_open:
-            active.append(name)
+    if not weekend:
+        for name, session in FOREX_SESSIONS.items():
+            local_tz = ZoneInfo(session["tz"])
+            local_now = now_utc.astimezone(local_tz)
+            local_decimal = local_now.hour + local_now.minute / 60
+            is_open = session["open"] <= local_decimal < session["close"]
+            sessions[name] = {
+                "open": is_open,
+                "local_time": local_now.strftime("%H:%M %Z"),
+            }
+            if is_open:
+                active.append(name)
 
     overlaps = []
     if "London" in active and "New York" in active:
@@ -72,10 +77,14 @@ def forex_market_status() -> dict:
     if "Sydney" in active and "Tokyo" in active:
         overlaps.append("Sydney–Tokyo")
 
-    return {"weekend": False, "sessions": sessions, "active": active, "overlaps": overlaps}
+    return {
+        "weekend": weekend,
+        "sessions": sessions,
+        "active": active,
+        "overlaps": overlaps,
+    }
 
 
-@app.list_tools()
 async def list_tools() -> list[Tool]:
     return [
         Tool(
@@ -157,7 +166,6 @@ async def list_tools() -> list[Tool]:
     ]
 
 
-@app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
         if name == "get-current-time":
@@ -258,43 +266,45 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 valid = ", ".join(FOREX_SESSIONS.keys())
                 text = f"❌ Unknown session '{raw_session}'. Valid options: {valid}"
                 return [TextContent(type="text", text=text)]
-            s = FOREX_SESSIONS[session]
+            session_config = FOREX_SESSIONS[session]
             now_utc = get_utc_now()
-            weekday = now_utc.weekday()
+            local_tz = ZoneInfo(session_config["tz"])
+            now_local = now_utc.astimezone(local_tz)
+            status = forex_market_status()
+            is_open = status["sessions"].get(session, {}).get("open", False)
 
-            open_hour = s["open"]
-            now_decimal = now_utc.hour + now_utc.minute / 60
-
-            if weekday >= 5:
-                days_to_monday = (7 - weekday)
+            if status["weekend"]:
+                reopen = now_utc.astimezone(NEW_YORK_TZ)
+                days_until_sunday = (6 - reopen.weekday()) % 7
+                reopen = reopen.replace(hour=17, minute=0, second=0, microsecond=0)
+                if days_until_sunday or reopen <= now_utc.astimezone(NEW_YORK_TZ):
+                    reopen += timedelta(days=days_until_sunday or 7)
+                delta = reopen - now_utc.astimezone(NEW_YORK_TZ)
+                hours, remainder = divmod(max(0, int(delta.total_seconds())), 3600)
+                minutes = remainder // 60
                 text = (
                     f"⏰ {session} Market Open\n\n"
                     f"It's the weekend — markets are CLOSED.\n"
-                    f"Next open: in ~{days_to_monday} day(s) (Monday {open_hour:02d}:00 UTC)"
+                    f"Forex reopens in approximately {hours}h {minutes}m "
+                    f"(Sunday 17:00 New York time)."
                 )
+            elif is_open:
+                text = f"✅ {session} market is currently OPEN\nLocal time: {now_local.strftime('%H:%M %Z')}"
             else:
-                if now_decimal < open_hour:
-                    delta_hours = open_hour - now_decimal
-                else:
-                    delta_hours = 24 - now_decimal + open_hour
-
-                hours = int(delta_hours)
-                minutes = int((delta_hours - hours) * 60)
-
-                local_tz = ZoneInfo(s["tz"])
-                now_local = now_utc.astimezone(local_tz)
-
-                status = forex_market_status()
-                is_open = status["sessions"].get(session, {}).get("open", False)
-
-                if is_open:
-                    text = f"✅ {session} market is currently OPEN\nLocal time: {now_local.strftime('%H:%M %Z')}"
-                else:
-                    text = (
-                        f"⏰ {session} Market opens in: {hours}h {minutes}m\n"
-                        f"Opens at {open_hour:02d}:00 UTC\n"
-                        f"Current local time: {now_local.strftime('%H:%M %Z')}"
-                    )
+                open_hour = session_config["open"]
+                next_open = now_local.replace(
+                    hour=open_hour, minute=0, second=0, microsecond=0
+                )
+                if next_open <= now_local:
+                    next_open += timedelta(days=1)
+                delta = next_open - now_local
+                hours, remainder = divmod(max(0, int(delta.total_seconds())), 3600)
+                minutes = remainder // 60
+                text = (
+                    f"⏰ {session} Market opens in: {hours}h {minutes}m\n"
+                    f"Opens at {open_hour:02d}:00 {now_local.tzname()} local time\n"
+                    f"Current local time: {now_local.strftime('%H:%M %Z')}"
+                )
         else:
             text = f"Unknown tool: {name}"
 
@@ -302,6 +312,17 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         text = f"Error: {type(e).__name__}: {e}"
 
     return [TextContent(type="text", text=text)]
+
+
+async def _handle_list_tools(_context, _params):
+    return ListToolsResult(tools=await list_tools())
+
+
+async def _handle_call_tool(_context, params):
+    return CallToolResult(content=await call_tool(params.name, params.arguments or {}))
+
+
+app = Server("time-mcp", on_list_tools=_handle_list_tools, on_call_tool=_handle_call_tool)
 
 
 async def main():

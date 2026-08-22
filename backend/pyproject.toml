@@ -32,7 +32,8 @@ dependencies = [
     # ── Search ───────────────────────────────────────────────────────────────
     "tavily-python>=0.5.0",
     # ── Utilities ────────────────────────────────────────────────────────────
-    "mcp>=1.9.0",
+    "mcp==2.0.0",
+    "tradingview-mcp==0.9.1",
     "rich>=14.2.0",
     # ── File extraction (server-side, no sandbox needed) ─────────────────────
     "openpyxl>=3.1.0",

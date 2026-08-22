@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from contextlib import asynccontextmanager
 import logging
 import asyncio
@@ -24,14 +24,15 @@ logger = logging.getLogger(__name__)
 # Load configuration
 settings = get_settings()
 
-# Startup readiness flag — True once MongoDB + Redis are fully initialized
+# Readiness is true only after MongoDB/Beanie and Redis are both initialized.
 _app_ready = False
+_startup_error: str | None = None
+_startup_task: asyncio.Task | None = None
 
 
 async def _init_databases() -> None:
-    """Initialize MongoDB/Beanie and Redis in the background so uvicorn
-    starts accepting requests (and healthchecks) immediately."""
-    global _app_ready
+    """Initialize required services and publish an accurate readiness state."""
+    global _app_ready, _startup_error
     try:
         logger.info("Background DB init — connecting to MongoDB…")
         await get_mongodb().initialize()
@@ -41,6 +42,7 @@ async def _init_databases() -> None:
         )
         logger.info("Successfully initialized Beanie")
     except Exception as exc:
+        _startup_error = "database initialization failed"
         logger.error(f"MongoDB/Beanie initialization failed: {exc}")
         return
 
@@ -48,7 +50,9 @@ async def _init_databases() -> None:
         await get_redis().initialize()
         logger.info("Successfully initialized Redis")
     except Exception as exc:
-        logger.error(f"Redis initialization failed: {exc} — continuing without Redis")
+        _startup_error = "queue initialization failed"
+        logger.error(f"Redis initialization failed: {exc}")
+        return
 
     _app_ready = True
     logger.info("Application fully ready — all services initialized")
@@ -58,16 +62,25 @@ async def _init_databases() -> None:
 async def lifespan(app: FastAPI):
     logger.info("Application startup - Dzeck AI Agent initializing")
 
-    # Kick off DB init as a background task so the server starts immediately
-    # and Replit's healthcheck can reach /health right away.
-    asyncio.create_task(_init_databases())
+    # Start initialization in the background, while /health accurately reports
+    # 503 until every required dependency is ready.
+    global _startup_task, _app_ready
+    _app_ready = False
+    _startup_task = asyncio.create_task(_init_databases())
 
     try:
         yield
     finally:
+        if _startup_task and not _startup_task.done():
+            _startup_task.cancel()
+            try:
+                await _startup_task
+            except asyncio.CancelledError:
+                pass
         logger.info("Application shutdown - Dzeck AI Agent terminating")
         await get_mongodb().shutdown()
         await get_redis().shutdown()
+        _startup_task = None
 
         logger.info("Cleaning up AgentService instance")
         try:
@@ -111,11 +124,22 @@ register_exception_handlers(app)
 app.include_router(router, prefix="/api/v1")
 
 
-# Health check — returns 200 immediately; reports readiness in body
+# Health check — readiness is 503 until required dependencies are initialized.
 @app.get("/health")
 async def health_check():
-    """Lightweight health endpoint — always 200 so deployment healthchecks pass."""
-    return {"status": "ok", "ready": _app_ready}
+    """Readiness probe for MongoDB/Beanie and Redis-backed agent execution."""
+    if not _app_ready:
+        return JSONResponse(
+            {"status": "degraded", "ready": False, "error": _startup_error},
+            status_code=503,
+        )
+    return {"status": "ok", "ready": True}
+
+
+@app.get("/health/live")
+async def liveness_check():
+    """Liveness probe that only confirms the FastAPI process is responding."""
+    return {"status": "ok"}
 
 
 # Serve compiled Vue frontend in production (when frontend/dist exists)
@@ -135,8 +159,6 @@ if os.path.exists(_frontend_dist):
             return FileResponse(target)
         return FileResponse(os.path.join(_frontend_dist, "index.html"))
 else:
-    from fastapi.responses import JSONResponse
-
     @app.get("/", include_in_schema=False)
     async def health_root():
         return JSONResponse({"status": "ok", "ready": _app_ready, "msg": "Dzeck backend running — frontend not built yet"})

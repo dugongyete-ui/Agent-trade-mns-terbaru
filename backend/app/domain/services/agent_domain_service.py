@@ -184,7 +184,10 @@ class AgentDomainService:
             logger.debug(f"Session {session_id} task: {task}")
 
             while task and not task.done:
-                event_id, event_str = await task.output_stream.get(start_id=latest_event_id, block_ms=0)
+                event_id, event_str = await task.output_stream.get(
+                    start_id=latest_event_id or "0-0",
+                    block_ms=1000,
+                )
                 latest_event_id = event_id
                 if event_str is None:
                     logger.debug(f"No event found in Session {session_id}'s event queue")
@@ -192,7 +195,7 @@ class AgentDomainService:
                 event = TypeAdapter(AgentEvent).validate_json(event_str)
                 event.id = event_id
                 logger.debug(f"Got event from Session {session_id}'s event queue: {type(event).__name__}")
-                await self._session_repository.update_unread_message_count(session_id, 0)
+                await self._session_repository.update_unread_message_count(session_id, user_id, 0)
                 yield event
                 if isinstance(event, (DoneEvent, ErrorEvent, WaitEvent)):
                     break
@@ -205,4 +208,4 @@ class AgentDomainService:
             await self._session_repository.add_event(session_id, event)
             yield event
         finally:
-            await self._session_repository.update_unread_message_count(session_id, 0)
+            await self._session_repository.update_unread_message_count(session_id, user_id, 0)

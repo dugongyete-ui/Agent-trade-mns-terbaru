@@ -21,7 +21,7 @@ import websockets
 import websockets.connection as _ws_conn
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 DERIV_WS_URL = "wss://ws.binaryws.com/websockets/v3?app_id=1089"
 
@@ -35,7 +35,6 @@ GRAN_LABEL = {
 # human-readable tool result. The LLM still receives the readable text.
 CHART_MARKER = "__DZECK_CHART__"
 
-app = Server("deriv-mcp")
 
 
 # ── Persistent Deriv WebSocket Connection ─────────────────────────────────────
@@ -1864,7 +1863,6 @@ def calc_zigzag(highs: list[float], lows: list[float], closes: list[float],
 
 # ── Tool Definitions ──────────────────────────────────────────────────────────
 
-@app.list_tools()
 async def list_tools() -> list[Tool]:
     return [
         # ── Market Data ───────────────────────────────────────────────────────
@@ -2981,7 +2979,6 @@ def _is_blocked_symbol(symbol: str) -> bool:
     return False
 
 
-@app.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     # Server-side symbol guard: block crypto/exchange symbols before they reach Deriv API
     _SYMBOL_ARGS = ("symbol", "symbol_a", "symbol_b")
@@ -5437,6 +5434,17 @@ async def _dispatch(name: str, args: dict) -> str:
 
     else:
         return f"Unknown tool: {name}"
+
+
+async def _handle_list_tools(_context, _params):
+    return ListToolsResult(tools=await list_tools())
+
+
+async def _handle_call_tool(_context, params):
+    return CallToolResult(content=await call_tool(params.name, params.arguments or {}))
+
+
+app = Server("deriv-mcp", on_list_tools=_handle_list_tools, on_call_tool=_handle_call_tool)
 
 
 async def main():

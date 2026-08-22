@@ -244,8 +244,6 @@ const allTools = computed<ToolContent[]>(() => {
 // Non-state refs that don't need reset
 const toolPanel = ref<InstanceType<typeof ToolPanel>>()
 const simpleBarRef = ref<InstanceType<typeof SimpleBar>>();
-const observerRef = ref<HTMLDivElement>();
-const chatContainerRef = ref<HTMLDivElement>();
 
 // Reset all refs to their initial values
 const resetState = () => {

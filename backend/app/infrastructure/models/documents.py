@@ -96,6 +96,8 @@ class SessionDocument(BaseDocument[Session], id_field="session_id", domain_model
     status: SessionStatus
     files: List[FileInfo] = []
     is_shared: Optional[bool] = False
+    share_token_hash: Optional[str] = None
+    share_expires_at: Optional[datetime] = None
     class Settings:
         name = "sessions"
         indexes = [

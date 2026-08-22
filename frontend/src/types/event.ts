@@ -52,6 +52,6 @@ export interface TitleEventData extends BaseEventData {
 }
 
 export interface PlanEventData extends BaseEventData {
-  status?: "created" | "updated" | "completed";
+  status?: "created" | "updated" | "pending" | "running" | "completed" | "failed" | "skipped";
   steps: StepEventData[];
 }

@@ -2,49 +2,49 @@
   "mcpServers": {
     "time": {
       "command": "python3",
-      "args": ["/home/runner/workspace/mcp-servers/time/server.py"],
+      "args": ["${PROJECT_ROOT}/mcp-servers/time/server.py"],
       "transport": "stdio",
       "enabled": true,
       "description": "Time & timezone tools + forex market session hours (WIB, UTC, SGT, etc.)"
     },
     "mongodb": {
       "command": "python3",
-      "args": ["/home/runner/workspace/mcp-servers/mongodb/server.py"],
+      "args": ["${PROJECT_ROOT}/mcp-servers/mongodb/server.py"],
       "transport": "stdio",
-      "enabled": true,
+      "enabled": false,
       "description": "MongoDB Atlas query tools — find, count, aggregate, stats"
     },
     "redis": {
       "command": "python3",
-      "args": ["/home/runner/workspace/mcp-servers/redis/server.py"],
+      "args": ["${PROJECT_ROOT}/mcp-servers/redis/server.py"],
       "transport": "stdio",
-      "enabled": true,
+      "enabled": false,
       "description": "Redis Cloud monitor — keys, values, stats, flush"
     },
     "deriv": {
       "command": "python3",
-      "args": ["/home/runner/workspace/mcp-servers/deriv/server.py"],
+      "args": ["${PROJECT_ROOT}/mcp-servers/deriv/server.py"],
       "transport": "stdio",
       "enabled": true,
       "description": "Deriv platform ONLY — real-time data + technical indicators for XAUUSD (Gold), forex pairs (frxEURUSD, frxGBPUSD), and Deriv commodities. NOT for BTC/ETH/crypto exchanges — use TradingView MCP for those."
     },
     "tradingview": {
       "command": "python3",
-      "args": ["/home/runner/workspace/mcp-servers/tradingview/server.py"],
+      "args": ["${PROJECT_ROOT}/mcp-servers/tradingview/server.py"],
       "transport": "stdio",
       "enabled": true,
       "description": "TradingView MCP — 30+ tools: screener, multi-timeframe analysis, backtesting, sentiment, Yahoo Finance news (routed via TV_PROXY_BASE when set)"
     },
     "economic-calendar": {
       "command": "python3",
-      "args": ["/home/runner/workspace/mcp-servers/economic-calendar/server.py"],
+      "args": ["${PROJECT_ROOT}/mcp-servers/economic-calendar/server.py"],
       "transport": "stdio",
       "enabled": true,
       "description": "Economic Calendar MCP — real-time calendar: CPI, FOMC, NFP, GDP, PMI, BOJ, BOE, RBA and all major economic events with forecast/actual/previous values and countdown timers. Source: TradingView Economic Calendar API (60-min disk cache)."
     },
     "sentiment": {
       "command": "python3",
-      "args": ["/home/runner/workspace/mcp-servers/sentiment/server.py"],
+      "args": ["${PROJECT_ROOT}/mcp-servers/sentiment/server.py"],
       "transport": "stdio",
       "enabled": true,
       "description": "Market Sentiment MCP — Long/Short Ratio (all traders + top traders), Open Interest history, and Crypto Fear & Greed Index. Data from Binance Futures API and Alternative.me. Free, no API key required. For crypto assets only (BTCUSDT, ETHUSDT, etc.)."
