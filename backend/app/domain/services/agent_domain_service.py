@@ -183,15 +183,26 @@ class AgentDomainService:
             logger.info(f"Session {session_id} started")
             logger.debug(f"Session {session_id} task: {task}")
 
-            while task and not task.done:
+            # Drain the output stream until an explicit terminal event arrives.
+            # Do not gate this loop on task.done: the runner can finish between
+            # yielding the penultimate event and this consumer's next iteration,
+            # leaving DoneEvent in Redis while the old condition closes SSE early.
+            while task:
                 event_id, event_str = await task.output_stream.get(
                     start_id=latest_event_id or "0-0",
                     block_ms=1000,
                 )
-                latest_event_id = event_id
                 if event_str is None:
+                    if task.done:
+                        logger.debug(
+                            "Task %s is done and no terminal event remains for session %s",
+                            task.id,
+                            session_id,
+                        )
+                        break
                     logger.debug(f"No event found in Session {session_id}'s event queue")
                     continue
+                latest_event_id = event_id
                 event = TypeAdapter(AgentEvent).validate_json(event_str)
                 event.id = event_id
                 logger.debug(f"Got event from Session {session_id}'s event queue: {type(event).__name__}")

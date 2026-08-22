@@ -1,10 +1,7 @@
 <template>
-  <div v-if="tool.name === 'message' && tool.args?.text"
-    class="prose prose-sm dark:prose-invert max-w-none text-[var(--text-secondary)] text-[14px] leading-relaxed
-           [&_a]:text-[var(--text-brand)] [&_a]:underline [&_a]:break-all
-           [&_p]:my-1 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0.5"
-    v-html="renderMarkdown(tool.args.text)"
-  />
+  <!-- message_notify_user/message_ask_user are persisted as assistant messages;
+       never render their underlying tool lifecycle as a second prose block. -->
+  <template v-if="tool.name === 'message'"></template>
   <div v-else-if="toolInfo" class="flex items-center group gap-2">
     <div class="flex-1 min-w-0">
       <div @click="handleClick"
@@ -48,9 +45,6 @@ import { ref } from "vue";
 import { ToolContent } from "../types/message";
 import { useToolInfo } from "../composables/useTool";
 import { useRelativeTime } from "../composables/useTime";
-import { marked } from "marked";
-import DOMPurify from "dompurify";
-
 const props = defineProps<{
   tool: ToolContent;
 }>();
@@ -61,25 +55,6 @@ const emit = defineEmits<{
 
 const { relativeTime } = useRelativeTime();
 const { toolInfo } = useToolInfo(ref(props.tool));
-
-const cleanLinkText = (href: string, text: string): string => {
-  const isRawUrl = text === href || text.startsWith('http://') || text.startsWith('https://');
-  if (isRawUrl) {
-    try { return new URL(href).hostname; } catch { /* fall through */ }
-  }
-  return text;
-};
-
-const renderer = new marked.Renderer();
-renderer.link = ({ href, text }: { href: string; title?: string | null; text: string }) => {
-  return `<a href="${href}" target="_blank" rel="noopener noreferrer" title="${href}">${cleanLinkText(href, text)}</a>`;
-};
-
-const renderMarkdown = (text: string) => {
-  if (typeof text !== 'string') return '';
-  const html = marked(text, { renderer }) as string;
-  return DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'rel'] });
-};
 
 const handleClick = () => {
   emit("click");

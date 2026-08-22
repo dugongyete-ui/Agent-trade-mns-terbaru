@@ -7,6 +7,8 @@ export default {
   'Thinking': 'Berpikir',
   'Task Progress': 'Progres Tugas',
   'Task Completed': 'Tugas Selesai',
+  'Finalizing analysis': 'Menyelesaikan analisis',
+  'Connection ended before the task reached a terminal state. Refresh to resume from the last event.': 'Koneksi berakhir sebelum tugas mencapai status akhir. Muat ulang untuk melanjutkan dari event terakhir.',
   'Create a task to get started': 'Buat tugas untuk memulai',
   'All Tasks': 'Semua Tugas',
   'Delete': 'Hapus',

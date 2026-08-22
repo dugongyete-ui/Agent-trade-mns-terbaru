@@ -110,13 +110,16 @@ const isFailed = computed((): boolean => {
     || (props.plan?.steps.some(step => step.status === 'failed') ?? false);
 });
 
+const allStepsFinished = computed((): boolean => {
+  return props.plan?.steps.every(step =>
+    step.status === 'completed' || step.status === 'failed' || step.status === 'skipped'
+  ) ?? false;
+});
+
 const isCompleted = computed((): boolean => {
-  return !isFailed.value && (
-    props.plan?.status === 'completed'
-      || (props.plan?.steps.every(step =>
-        step.status === 'completed' || step.status === 'skipped'
-      ) ?? false)
-  );
+  // The plan event may report all steps done while the executor is still
+  // summarizing. Only the explicit terminal plan status is authoritative.
+  return !isFailed.value && props.plan?.status === 'completed';
 });
 
 const currentStep = computed((): string => {
@@ -125,7 +128,9 @@ const currentStep = computed((): string => {
       return step.description;
     }
   }
-  return isFailed.value ? 'Task Failed' : t('Task Completed');
+  if (isFailed.value) return 'Task Failed';
+  if (!isCompleted.value && allStepsFinished.value) return t('Finalizing analysis');
+  return t('Task Completed');
 });
 </script>
 

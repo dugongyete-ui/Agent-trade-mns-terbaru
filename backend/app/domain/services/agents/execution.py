@@ -148,18 +148,22 @@ class ExecutionAgent(BaseAgent):
                         yield WaitEvent()
                         return
                     continue
-                elif event.function_name == "message_notify_user" and event.status == ToolStatus.CALLING:
-                    # A notification is user-facing narration, not merely a
-                    # tool chip. Convert text-only notifications as well as
-                    # attachment notifications into a visible message event.
-                    raw_att = event.function_args.get("attachments")
-                    att_list = [raw_att] if isinstance(raw_att, str) else list(raw_att or [])
-                    att_list = [p for p in att_list if p]
-                    self._notification_emitted = True
-                    yield MessageEvent(
-                        message=event.function_args.get("text", ""),
-                        attachments=[FileInfo(file_path=p) for p in att_list] or None,
-                    )
+                elif event.function_name == "message_notify_user":
+                    # This is a user-facing narration, not an external tool
+                    # result. Emit one assistant MessageEvent on CALLING and
+                    # suppress both lifecycle ToolEvents; otherwise the same
+                    # text is rendered once as a message and once as a tool
+                    # prose block in the frontend.
+                    if event.status == ToolStatus.CALLING:
+                        raw_att = event.function_args.get("attachments")
+                        att_list = [raw_att] if isinstance(raw_att, str) else list(event.function_args.get("attachments") or [])
+                        att_list = [p for p in att_list if p]
+                        self._notification_emitted = True
+                        yield MessageEvent(
+                            message=event.function_args.get("text", ""),
+                            attachments=[FileInfo(file_path=p) for p in att_list] or None,
+                            source="notification",
+                        )
                     continue
             yield event
 
@@ -176,7 +180,7 @@ class ExecutionAgent(BaseAgent):
             step.success = True
             step.result = message
             step.error = None
-            yield MessageEvent(role="assistant", message=message)
+            yield MessageEvent(role="assistant", message=message, source="final")
             yield StepEvent(status=StepStatus.COMPLETED, step=step)
 
     async def execute_step(self, plan: Plan, step: Step, message: Message) -> AsyncGenerator[BaseEvent, None]:
@@ -375,7 +379,7 @@ class ExecutionAgent(BaseAgent):
                     f"Analisis akan dilanjutkan dengan data yang sudah terkumpul dari langkah lain."
                 )
 
-            yield MessageEvent(role="assistant", message=_msg)
+            yield MessageEvent(role="assistant", message=_msg, source="notification")
 
         if step.status not in {ExecutionStatus.FAILED, ExecutionStatus.SKIPPED}:
             step.status = (
@@ -429,7 +433,7 @@ class ExecutionAgent(BaseAgent):
                 for _i in range(0, len(clean_text), _CHUNK):
                     yield MessageChunkEvent(content=clean_text[_i:_i + _CHUNK], done=False)
                 yield MessageChunkEvent(content="", done=True)
-                yield MessageEvent(message=clean_text)
+                yield MessageEvent(message=clean_text, source="final")
             return
         except Exception as e:
             logger.warning(f"Streaming summarize failed, falling back to JSON mode: {e}")
@@ -442,9 +446,9 @@ class ExecutionAgent(BaseAgent):
                 parsed_response = await self._parse_json(event.message)
                 if parsed_response is None:
                     logger.warning("Summarize fallback returned non-JSON, using raw message")
-                    yield MessageEvent(message=event.message)
+                    yield MessageEvent(message=event.message, source="final")
                     continue
                 msg_obj = Message.model_validate(parsed_response)
-                yield MessageEvent(message=msg_obj.message)
+                yield MessageEvent(message=msg_obj.message, source="final")
                 continue
             yield event

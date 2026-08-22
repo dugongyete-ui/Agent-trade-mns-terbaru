@@ -29,6 +29,7 @@ export interface MessageEventData extends BaseEventData {
   content: string;
   role: "user" | "assistant";
   attachments: FileInfo[];
+  source?: "user" | "ack" | "notification" | "step_result" | "final" | "assistant";
 }
 
 export interface MessageChunkEventData extends BaseEventData {

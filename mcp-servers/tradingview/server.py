@@ -92,8 +92,64 @@ def _install_mcp2_fastmcp_compat() -> None:
     sys.modules["mcp.server.fastmcp"] = compat
 
 
+def _install_live_market_compat() -> None:
+    """Adapt tradingview-mcp 0.9.1 to its installed Yahoo price service.
+
+    The released package passes ``exchange`` to ``get_price`` although the
+    installed Yahoo implementation accepts only ``symbol``. It also returns
+    ``price``/``change_pct`` while the live-market service reads
+    ``current_price``/``change_percent``. Patch the module-local function at
+    startup so all MCP callers receive a populated, backward-compatible
+    snapshot without enabling any write/trading operation.
+    """
+    try:
+        import inspect
+        from tradingview_mcp.core.services import live_market_service as live
+        from tradingview_mcp.core.services import yahoo_finance_service as yahoo
+
+        if "exchange" in inspect.signature(yahoo.get_price).parameters:
+            return
+        if getattr(live.get_price, "_dzeck_compat", False):
+            return
+
+        def compatible_get_price(symbol: str, exchange: str = "") -> dict:
+            requested_symbol = str(symbol).strip().upper()
+            yahoo_symbol = requested_symbol
+            if yahoo_symbol.endswith("USDT") and len(yahoo_symbol) > 4:
+                yahoo_symbol = yahoo_symbol[:-4] + "-USD"
+            elif yahoo_symbol.endswith("USDC") and len(yahoo_symbol) > 4:
+                yahoo_symbol = yahoo_symbol[:-4] + "-USD"
+            elif "/" in yahoo_symbol:
+                yahoo_symbol = yahoo_symbol.replace("/", "-")
+            data = yahoo.get_price(symbol=yahoo_symbol)
+            if not isinstance(data, dict) or "error" in data:
+                return {**(data if isinstance(data, dict) else {}), "symbol": requested_symbol}
+            return {
+                **data,
+                "symbol": requested_symbol,
+                "exchange": exchange.upper() if exchange else data.get("exchange", ""),
+                "current_price": data.get("price"),
+                "change_percent": data.get("change_pct"),
+            }
+
+        compatible_get_price._dzeck_compat = True  # type: ignore[attr-defined]
+        live.get_price = compatible_get_price
+        print(
+            "[tradingview-mcp] installed Yahoo get_price compatibility adapter",
+            file=sys.stderr,
+            flush=True,
+        )
+    except Exception as exc:
+        print(
+            f"[tradingview-mcp] WARNING: could not patch Yahoo price compatibility: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 if __name__ == "__main__":
     _install_mcp2_fastmcp_compat()
+    _install_live_market_compat()
     if TV_PROXY_BASE:
         _apply_proxy_patches()
     else:

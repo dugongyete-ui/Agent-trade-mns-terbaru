@@ -63,6 +63,7 @@ class MessageEventData(BaseEventData):
     role: Literal["user", "assistant"]
     content: str
     attachments: Optional[List[FileInfoResponse]] = None
+    source: Literal["user", "ack", "notification", "step_result", "final", "assistant"] = "assistant"
 
 class MessageSSEEvent(BaseSSEEvent):
     event: Literal["message"] = "message"
@@ -75,7 +76,8 @@ class MessageSSEEvent(BaseSSEEvent):
                 **BaseEventData.base_event_data(event),
                 role=event.role,
                 content=event.message,
-                attachments=[await FileInfoResponse.from_file_info(attachment) for attachment in event.attachments] if event.attachments else None
+                attachments=[await FileInfoResponse.from_file_info(attachment) for attachment in event.attachments] if event.attachments else None,
+                source=event.source,
             )
         )
 

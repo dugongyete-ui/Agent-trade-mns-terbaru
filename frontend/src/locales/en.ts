@@ -7,6 +7,8 @@ export default {
   'Thinking': 'Thinking',
   'Task Progress': 'Task Progress',
   'Task Completed': 'Task Completed',
+  'Finalizing analysis': 'Finalizing analysis',
+  'Connection ended before the task reached a terminal state. Refresh to resume from the last event.': 'Connection ended before the task reached a terminal state. Refresh to resume from the last event.',
   'Create a task to get started': 'Create a task to get started',
   'All Tasks': 'All Tasks',
   'Delete': 'Delete',

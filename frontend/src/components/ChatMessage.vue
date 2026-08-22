@@ -69,6 +69,9 @@
       <div
         class="flex flex-col gap-3 flex-1 min-w-0 overflow-hidden pt-2 transition-[max-height,opacity] duration-150 ease-in-out"
         :class="{ 'max-h-[100000px] opacity-100': isExpanded, 'max-h-0 opacity-0': !isExpanded }">
+        <div v-for="(notification, index) in stepContent.notifications || []" :key="`notification-${index}`"
+          class="text-sm text-[var(--text-secondary)] leading-relaxed prose dark:prose-invert max-w-none"
+          v-html="renderMarkdown(notification)"></div>
         <ToolUse v-for="(tool, index) in stepContent.tools" :key="index" :tool="tool" @click="handleToolClick(tool)" />
       </div>
     </div>

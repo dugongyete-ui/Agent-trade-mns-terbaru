@@ -271,6 +271,7 @@ class PlanActFlow(BaseFlow):
                     _lang = getattr(self.plan, "language", "id") or "id"
                     yield MessageEvent(
                         role="assistant",
+                        source="notification",
                         message=(
                             "I've reached the maximum number of analysis steps. "
                             "I'll now deliver the summary based on all data collected so far."
@@ -362,6 +363,7 @@ class PlanActFlow(BaseFlow):
                         _lang = getattr(self.plan, "language", "id") or "id"
                         yield MessageEvent(
                             role="assistant",
+                            source="notification",
                             message=(
                                 "Several consecutive steps encountered data retrieval issues. "
                                 "I'll now summarize with the information that was successfully collected."

@@ -62,6 +62,14 @@ class BaseAgent(ABC):
             temperature=settings.temperature,
             base_url=settings.api_base,
         )
+        # Pass the configured application key explicitly. This is required for
+        # OpenAI-compatible gateways such as OpenRouter because the process may
+        # inherit an unrelated OPENAI_API_KEY from the host environment.
+        if settings.api_key:
+            if settings.model_provider == "openai":
+                kwargs["openai_api_key"] = settings.api_key
+            else:
+                kwargs["api_key"] = settings.api_key
         if settings.max_tokens is not None:
             kwargs["max_tokens"] = settings.max_tokens
         if settings.extra_headers:

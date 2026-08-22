@@ -226,7 +226,7 @@ class PlannerAgent(BaseAgent):
                 # MessageChunkEvent is transient (not saved to DB), so we follow up
                 # with a MessageEvent that IS saved.  The frontend replaces the
                 # streaming bubble with this rather than creating a duplicate.
-                yield MessageEvent(role="assistant", message=full_text)
+                yield MessageEvent(role="assistant", message=full_text, source="ack")
         except Exception as e:
             logger.warning(f"Acknowledge streaming failed, skipping: {e}")
 

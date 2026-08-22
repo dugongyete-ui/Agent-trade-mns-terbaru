@@ -94,11 +94,12 @@ class StepEvent(BaseEvent):
     status: StepStatus
 
 class MessageEvent(BaseEvent):
-    """Message event"""
+    """Message event with an explicit display source."""
     type: Literal["message"] = "message"
     role: Literal["user", "assistant"] = "assistant"
     message: str
     attachments: Optional[List[FileInfo]] = None
+    source: Literal["user", "ack", "notification", "step_result", "final", "assistant"] = "assistant"
 
 class DoneEvent(BaseEvent):
     """Done event"""

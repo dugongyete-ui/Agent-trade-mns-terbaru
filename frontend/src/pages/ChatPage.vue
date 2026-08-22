@@ -102,7 +102,8 @@
       </div>
       <div class="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col flex-1">
         <div class="flex flex-col w-full gap-[12px] pb-[80px] pt-[12px] flex-1 overflow-y-auto">
-          <ChatMessage v-for="(message, index) in messages" :key="index" :message="message"
+          <ChatMessage v-for="(message, index) in messages"
+            :key="message.content.event_id || `${message.type}-${index}`" :message="message"
             :hideHeader="isConsecutiveAssistant(messages, index)"
             @toolClick="handleToolClick" />
 
@@ -113,6 +114,10 @@
             class="flex items-center gap-2 px-4 py-2 mx-auto rounded-xl text-sm text-[var(--text-secondary)] bg-[var(--fill-tsp-white-main)] border border-[var(--border-main)] w-fit">
             <span class="inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
             {{ $t('Agent is waiting for your response') }}
+          </div>
+          <div v-if="streamInterrupted && !isLoading"
+            class="flex items-center gap-2 px-4 py-2 mx-auto rounded-xl text-sm text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 w-fit">
+            {{ $t('Connection ended before the task reached a terminal state. Refresh to resume from the last event.') }}
           </div>
         </div>
 
@@ -173,6 +178,9 @@ const { toggleLeftPanel, isLeftPanelShow } = useLeftPanel()
 const { showSessionFileList } = useSessionFileList()
 const { hideFilePanel } = useFilePanel()
 
+// Event IDs are unique in the backend stream and are the frontend's idempotency key.
+const seenEventIds = new Set<string>();
+
 // Create initial state factory
 const createInitialState = () => ({
   inputMessage: '',
@@ -192,6 +200,8 @@ const createInitialState = () => ({
   cancelCurrentChat: null as (() => void) | null,
   streamingMessageContent: null as MessageContent | null,
   currentThinkingText: null as string | null,
+  streamInterrupted: false,
+  streamTerminalEvent: false,
   attachments: [] as FileInfo[],
   shareMode: 'private' as 'private' | 'public', // Default to private mode
   linkCopied: false,
@@ -218,6 +228,8 @@ const {
   cancelCurrentChat,
   streamingMessageContent,
   currentThinkingText,
+  streamInterrupted,
+  streamTerminalEvent,
   attachments,
   shareMode,
   linkCopied,
@@ -247,6 +259,12 @@ const simpleBarRef = ref<InstanceType<typeof SimpleBar>>();
 
 // Reset all refs to their initial values
 const resetState = () => {
+  seenEventIds.clear();
+  _chunkBuffer = '';
+  if (_chunkRafId !== null) {
+    cancelAnimationFrame(_chunkRafId);
+    _chunkRafId = null;
+  }
   // Cancel any existing chat connection
   if (cancelCurrentChat.value) {
     cancelCurrentChat.value();
@@ -298,6 +316,7 @@ const handleMessageChunkEvent = (chunkData: MessageChunkEventData) => {
     // First chunk — push a new assistant message and hold a reference to its content
     const content: MessageContent = {
       content: chunkData.content,
+      event_id: chunkData.event_id,
       timestamp: chunkData.timestamp,
       isStreaming: true,
     };
@@ -338,10 +357,29 @@ const handleMessageChunkEvent = (chunkData: MessageChunkEventData) => {
 
 // Handle message event
 const handleMessageEvent = (messageData: MessageEventData) => {
+  // Per-step evidence is already represented by the step/tool panel and is
+  // consumed by summarization. Do not add a second assistant bubble for it.
+  if (messageData.source === 'step_result') return;
+
+  // Progress notifications belong inside the active step, matching the
+  // Manus-style timeline. Keep a bubble only as a safe fallback when the
+  // corresponding step event is unavailable during a partial replay.
+  if (messageData.source === 'notification') {
+    const targetStep = getLastStep();
+    if (targetStep) {
+      targetStep.notifications ??= [];
+      if (!targetStep.notifications.includes(messageData.content)) {
+        targetStep.notifications.push(messageData.content);
+      }
+      return;
+    }
+  }
+
   messages.value.push({
     type: messageData.role,
     content: {
-      ...messageData
+      ...messageData,
+      event_id: messageData.event_id,
     } as MessageContent,
   });
 
@@ -355,9 +393,25 @@ const handleMessageEvent = (messageData: MessageEventData) => {
   }
 }
 
-// Handle tool event
+// Handle tool event. A tool call has two lifecycle events (calling/called),
+// and calls can be returned in parallel. Reconcile by tool_call_id, not by the
+// last tool received, so an out-of-order called event cannot create a duplicate.
+const findToolByCallId = (toolCallId: string): ToolContent | undefined => {
+  for (const message of messages.value) {
+    if (message.type === 'tool') {
+      const tool = message.content as ToolContent;
+      if (tool.tool_call_id === toolCallId) return tool;
+    }
+    if (message.type === 'step') {
+      const step = message.content as StepContent;
+      const tool = step.tools.find(item => item.tool_call_id === toolCallId);
+      if (tool) return tool;
+    }
+  }
+  return undefined;
+};
+
 const handleToolEvent = (toolData: ToolEventData) => {
-  // Update thinking text: show current action while calling, reset to null when done
   if (toolData.status === 'calling') {
     currentThinkingText.value = t(TOOL_FUNCTION_MAP[toolData.function] || toolData.function);
   } else {
@@ -365,19 +419,20 @@ const handleToolEvent = (toolData: ToolEventData) => {
   }
 
   const lastStep = getLastStep();
-  let toolContent: ToolContent = {
+  const toolContent: ToolContent = {
     ...toolData,
     chart: toolData.content?.chart ?? null,
-  }
-  if (lastTool.value && lastTool.value.tool_call_id === toolContent.tool_call_id) {
-    // Preserve args from CALLING event — CALLED events often arrive with empty args,
-    // which would break prose rendering for message_notify_user notifications
-    // (ToolUse.vue renders prose only when tool.args?.text is truthy).
-    const savedArgs = lastTool.value.args;
-    Object.assign(lastTool.value, toolContent);
+  };
+  const existingTool = findToolByCallId(toolContent.tool_call_id);
+
+  if (existingTool) {
+    // Preserve calling args when the called event omits them.
+    const savedArgs = existingTool.args;
+    Object.assign(existingTool, toolContent);
     if (!toolContent.args || Object.keys(toolContent.args).length === 0) {
-      lastTool.value.args = savedArgs;
+      existingTool.args = savedArgs;
     }
+    lastTool.value = existingTool;
   } else {
     if (lastStep?.status === 'running') {
       lastStep.tools.push(toolContent);
@@ -390,8 +445,7 @@ const handleToolEvent = (toolData: ToolEventData) => {
     lastTool.value = toolContent;
   }
   if (toolContent.name !== 'message') {
-    lastNoMessageTool.value = toolContent;
-    // Do NOT auto-open the tool panel — user opens it manually by clicking a tool
+    lastNoMessageTool.value = existingTool || toolContent;
   }
 }
 
@@ -415,26 +469,34 @@ const syncStepToPlan = (status: string) => {
   }
 }
 
-// Handle step event
+// Handle step event. Step IDs are stable for a step's lifecycle, so do not
+// update whichever step happens to be last after a replay or plan update.
 const handleStepEvent = (stepData: StepEventData) => {
-  const lastStep = getLastStep();
+  const matchingMessage = messages.value.find(message => {
+    if (message.type !== 'step') return false;
+    return (message.content as StepContent).id === stepData.id;
+  });
+  const matchingStep = matchingMessage?.content as StepContent | undefined;
+
   if (stepData.status === 'running') {
-    messages.value.push({
-      type: 'step',
-      content: {
-        ...stepData,
-        tools: []
-      } as StepContent,
-    });
-    syncStepToPlan('running');
-  } else if (stepData.status === 'completed') {
-    if (lastStep) {
-      lastStep.status = stepData.status;
+    if (!matchingStep) {
+      messages.value.push({
+        type: 'step',
+        content: {
+          ...stepData,
+          tools: []
+        } as StepContent,
+      });
+    } else {
+      matchingStep.status = 'running';
     }
-    syncStepToPlan('completed');
-  } else if (stepData.status === 'failed') {
-    isLoading.value = false;
-    syncStepToPlan('failed');
+    syncStepToPlan('running');
+  } else if (stepData.status === 'completed' || stepData.status === 'failed' || stepData.status === 'skipped') {
+    if (matchingStep) {
+      matchingStep.status = stepData.status;
+    }
+    if (stepData.status === 'failed') isLoading.value = false;
+    syncStepToPlan(stepData.status === 'skipped' ? 'completed' : stepData.status);
   }
 }
 
@@ -472,6 +534,12 @@ const markPlanStoppedLocally = () => {
 
 // Main event handler function
 const handleEvent = (event: AgentSSEEvent) => {
+  const eventId = (event.data as { event_id?: string } | undefined)?.event_id;
+  if (eventId) {
+    if (seenEventIds.has(eventId)) return;
+    seenEventIds.add(eventId);
+  }
+
   if (event.event === 'message') {
     // The MessageEvent is the authoritative, persisted form of this response.
     // Remove any streaming bubble that preceded it — whether still in progress
@@ -499,18 +567,24 @@ const handleEvent = (event: AgentSSEEvent) => {
   } else if (event.event === 'step') {
     handleStepEvent(event.data as StepEventData);
   } else if (event.event === 'done') {
+    streamTerminalEvent.value = true;
+    streamInterrupted.value = false;
     isLoading.value = false;
   } else if (event.event === 'wait') {
+    streamTerminalEvent.value = true;
+    streamInterrupted.value = false;
     isLoading.value = false;
     isWaitingForInput.value = true;
   } else if (event.event === 'error') {
+    streamTerminalEvent.value = true;
+    streamInterrupted.value = false;
     handleErrorEvent(event.data as ErrorEventData);
   } else if (event.event === 'title') {
     handleTitleEvent(event.data as TitleEventData);
   } else if (event.event === 'plan') {
     handlePlanEvent(event.data as PlanEventData);
   }
-  lastEventId.value = event.data.event_id;
+  if (eventId) lastEventId.value = eventId;
 }
 
 const handleSubmit = () => {
@@ -555,6 +629,8 @@ const chat = async (message: string = '', files: FileInfo[] = []) => {
   attachments.value = [];
   isLoading.value = true;
   isWaitingForInput.value = false;
+  streamInterrupted.value = false;
+  streamTerminalEvent.value = false;
 
   try {
     // Use the split event handler function and store the cancel function
@@ -572,7 +648,10 @@ const chat = async (message: string = '', files: FileInfo[] = []) => {
         onOpen: () => {
           console.log('Chat opened');
           isLoading.value = true;
+          streamInterrupted.value = false;
+          streamTerminalEvent.value = false;
         },
+
         onMessage: ({ event, data }) => {
           handleEvent({
             event: event as AgentSSEEvent['event'],
@@ -581,6 +660,9 @@ const chat = async (message: string = '', files: FileInfo[] = []) => {
         },
         onClose: () => {
           console.log('Chat closed');
+          if (!streamTerminalEvent.value && isLoading.value) {
+            streamInterrupted.value = true;
+          }
           isLoading.value = false;
           // Clear the cancel function when connection is closed normally
           if (cancelCurrentChat.value) {
@@ -589,6 +671,9 @@ const chat = async (message: string = '', files: FileInfo[] = []) => {
         },
         onError: (error) => {
           console.error('Chat error:', error);
+          if (!streamTerminalEvent.value) {
+            streamInterrupted.value = true;
+          }
           isLoading.value = false;
           // Clear the cancel function when there's an error
           if (cancelCurrentChat.value) {
@@ -719,6 +804,8 @@ const handleStop = async () => {
   // and publishes the terminal message/plan/done events for persistence.
   isLoading.value = false;
   isWaitingForInput.value = false;
+  streamTerminalEvent.value = true;
+  streamInterrupted.value = false;
   currentThinkingText.value = null;
   markPlanStoppedLocally();
 

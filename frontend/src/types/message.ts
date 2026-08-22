@@ -9,6 +9,8 @@ export interface Message {
 
 export interface BaseContent {
   timestamp: number;
+  /** Backend Redis/Mongo event identity; absent only for optimistic local user messages. */
+  event_id?: string;
 }
 
 export interface MessageContent extends BaseContent {
@@ -60,8 +62,9 @@ export interface ChartPayload {
 export interface StepContent extends BaseContent {
   id: string;
   description: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
   tools: ToolContent[];
+  notifications?: string[];
 }
 
 export interface AttachmentsContent extends BaseContent {
