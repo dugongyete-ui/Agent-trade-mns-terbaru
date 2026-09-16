@@ -105,6 +105,20 @@ class DoneEvent(BaseEvent):
     """Done event"""
     type: Literal["done"] = "done"
 
+class ThinkingEvent(BaseEvent):
+    """Reasoning (chain-of-thought) streaming event.
+
+    Emitted while the model is "thinking" (reasoning_content deltas from
+    reasoning models such as nvidia/nemotron). The frontend renders these as
+    a collapsible Thinking block above the response.
+
+    done=False chunks are transient (not persisted); a final done=True event
+    carries the full reasoning text and IS persisted so history keeps it.
+    """
+    type: Literal["thinking"] = "thinking"
+    content: str = ""
+    done: bool = False
+
 class WaitEvent(BaseEvent):
     """Wait event"""
     type: Literal["wait"] = "wait"
@@ -126,6 +140,7 @@ AgentEvent = Annotated[
         StepEvent,
         MessageEvent,
         MessageChunkEvent,
+        ThinkingEvent,
         DoneEvent,
         TitleEvent,
         WaitEvent,

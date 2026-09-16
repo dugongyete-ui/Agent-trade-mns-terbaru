@@ -18,6 +18,7 @@ from app.domain.models.event import (
     ErrorEvent,
     MessageEvent,
     MessageChunkEvent,
+    ThinkingEvent,
     DoneEvent,
 )
 from langchain.messages import HumanMessage as LCHumanMessage
@@ -76,6 +77,11 @@ class PlannerAgent(BaseAgent):
                     pkwargs["http_async_client"] = httpx.AsyncClient(verify=settings.ssl_verify)
                 from langchain.chat_models import init_chat_model as _init
                 self._model = _init(**pkwargs)
+                # The override model is a generic chat model — drop the
+                # thinking variants so _current_model() falls back to it
+                # directly instead of silently using the MAIN model.
+                self._model_think = None
+                self._model_no_think = None
                 logger.info(
                     f"Planner model overridden: {settings.planner_model_name} "
                     f"(provider={provider})"
@@ -210,16 +216,24 @@ class PlannerAgent(BaseAgent):
         )
         try:
             full_text = ""
+            reasoning_text = ""
             # Use full conversation history so the model can actually read previously
             # uploaded file content — not just a hint that the content "exists".
             await self._ensure_memory()
             context = list(self.memory.get_messages())
             context.append(LCHumanMessage(content=prompt))
-            async for chunk in self._model.astream(context):
+            async for chunk in self._current_model().astream(context):
+                # Live reasoning stream for the collapsible Thinking UI.
+                reasoning_delta = (getattr(chunk, "additional_kwargs", {}) or {}).get("reasoning_content")
+                if reasoning_delta:
+                    reasoning_text += reasoning_delta
+                    yield ThinkingEvent(content=reasoning_delta, done=False)
                 text = chunk.content if isinstance(chunk.content, str) else ""
                 if text:
                     full_text += text
                     yield MessageChunkEvent(content=text, done=False)
+            if reasoning_text:
+                yield ThinkingEvent(content=reasoning_text, done=True)
             if full_text:
                 yield MessageChunkEvent(content="", done=True)
                 # Persist the acknowledgment so it survives page refresh.

@@ -110,3 +110,33 @@ class SessionDocument(BaseDocument[Session], id_field="session_id", domain_model
         ]
 
 
+class MemoryDocument(Document):
+    """MongoDB document for cross-session agent memory (per user).
+
+    Ported concept from HKUDS/Vibe-Trading PersistentMemory: durable,
+    self-contained facts the agent saves about the user and recalls by
+    keyword × importance × recency scoring.
+    """
+    memory_id: str
+    user_id: str
+    kind: str = "reference"  # user | feedback | project | reference | lesson
+    content: str
+    tags: List[str] = []
+    importance: float = 0.5
+    created_at: datetime = datetime.now(timezone.utc)
+    updated_at: datetime = datetime.now(timezone.utc)
+    access_count: int = 0
+    last_accessed_at: Optional[datetime] = None
+
+    class Settings:
+        name = "agent_memories"
+        indexes = [
+            "memory_id",
+            "user_id",
+            IndexModel(
+                [("user_id", ASCENDING), ("updated_at", DESCENDING)],
+                name="user_id_updated_at",
+            ),
+        ]
+
+

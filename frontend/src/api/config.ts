@@ -43,3 +43,25 @@ export async function getCachedAuthProvider(): Promise<string | null> {
   const clientConfig = await getCachedClientConfig()
   return clientConfig?.auth_provider || null
 }
+
+export interface ThinkingModeResponse {
+  thinking_mode: 'on' | 'off'
+}
+
+/**
+ * Get the current thinking (reasoning) mode from the backend.
+ */
+export async function getThinkingMode(): Promise<'on' | 'off'> {
+  const response = await apiClient.get<ApiResponse<ThinkingModeResponse>>('/config/thinking')
+  return response.data.data.thinking_mode
+}
+
+/**
+ * Toggle the thinking (reasoning) mode at runtime. Applies to all new AI calls.
+ */
+export async function setThinkingMode(enabled: boolean): Promise<'on' | 'off'> {
+  const response = await apiClient.put<ApiResponse<ThinkingModeResponse>>('/config/thinking', {
+    enabled,
+  })
+  return response.data.data.thinking_mode
+}

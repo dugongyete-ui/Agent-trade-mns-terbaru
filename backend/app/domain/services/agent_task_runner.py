@@ -9,6 +9,7 @@ from app.domain.models.event import (
     TitleEvent,
     MessageEvent,
     MessageChunkEvent,
+    ThinkingEvent,
     DoneEvent,
     ToolEvent,
     WaitEvent,
@@ -34,9 +35,12 @@ from app.domain.services.tools.mcp import get_mcp_toolkit
 from app.domain.services.file_extraction import format_attachment_for_agent, load_attachment_for_agent
 from app.domain.models.tool_result import ToolResult
 from app.domain.models.search import SearchResults
+from app.core.config import get_settings
 import base64
 
 logger = logging.getLogger(__name__)
+
+settings = get_settings()
 
 class AgentTaskRunner(TaskRunner):
     """Agent task that can be cancelled"""
@@ -72,7 +76,13 @@ class AgentTaskRunner(TaskRunner):
     async def _put_and_add_event(self, task: Task, event: AgentEvent) -> None:
         event_id = await task.output_stream.put(event.model_dump_json())
         event.id = event_id
-        if not isinstance(event, MessageChunkEvent):
+        # Transient streaming chunks are not persisted. A ThinkingEvent with
+        # done=True carries the full reasoning text and IS persisted so the
+        # collapsible Thinking block survives page refresh.
+        _transient = isinstance(event, MessageChunkEvent) or (
+            isinstance(event, ThinkingEvent) and not event.done
+        )
+        if not _transient:
             await self._session_repository.add_event(self._session_id, event)
 
     async def _pop_event(self, task: Task) -> Optional[AgentEvent]:
@@ -114,10 +124,32 @@ class AgentTaskRunner(TaskRunner):
                     else:
                         logger.warning("MCP tool: No function_result found")
                         event.tool_content = McpToolContent(result="No result available")
+                elif event.tool_name == "technical":
+                    logger.debug(f"Processing technical indicator tool event: {event.function_name}")
+                    self._set_result_tool_content(event, "Indicator computation failed")
+                elif event.tool_name in ("backtest", "portfolio_risk", "memory", "committee", "skills"):
+                    logger.debug(f"Processing {event.tool_name} tool event: {event.function_name}")
+                    self._set_result_tool_content(event, "Tool execution failed")
                 else:
                     logger.warning(f"Agent {self._agent_id} received unknown tool event: {event.tool_name}")
         except Exception as e:
             logger.exception(f"Agent {self._agent_id} failed to generate tool content: {e}")
+
+    def _set_result_tool_content(self, event: ToolEvent, failure_label: str) -> None:
+        """Wrap a native ToolResult into McpToolContent for the UI."""
+        if event.function_result:
+            if hasattr(event.function_result, "data") and event.function_result.data is not None:
+                event.tool_content = McpToolContent(result=event.function_result.data)
+            elif hasattr(event.function_result, "success") and event.function_result.success:
+                event.tool_content = McpToolContent(result=str(event.function_result))
+            else:
+                event.tool_content = McpToolContent(
+                    result=getattr(event.function_result, "message", None)
+                    or failure_label
+                )
+        else:
+            logger.warning(f"{event.tool_name} tool: No function_result found")
+            event.tool_content = McpToolContent(result="No result available")
 
     async def _run_flow(
         self,
@@ -227,6 +259,22 @@ class AgentTaskRunner(TaskRunner):
                     attachments=attachment_names,
                     vision_images=vision_images,
                 )
+
+                # Cross-session memory auto-recall (Vibe-Trading PersistentMemory
+                # port): top relevant memories are injected as internal context
+                # before the flow runs. Never fatal, never mentioned to the user.
+                if settings.memory_enabled:
+                    try:
+                        from app.domain.services.tools.memory import build_memory_recall_block
+                        memory_block = await build_memory_recall_block(self._user_id, message)
+                        if memory_block:
+                            message_obj.message = f"{message_obj.message}\n\n{memory_block}"
+                            logger.info(
+                                "Injected recalled-memory block (%d chars) for user %s",
+                                len(memory_block), self._user_id,
+                            )
+                    except Exception as mem_err:
+                        logger.warning(f"Memory recall block skipped: {mem_err}")
 
                 async for event in self._run_flow(message_obj):
                     await self._put_and_add_event(task, event)

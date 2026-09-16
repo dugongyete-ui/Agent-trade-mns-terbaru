@@ -21,6 +21,15 @@
                         aria-expanded="false" aria-haspopup="dialog">
                         <Paperclip :size="16" />
                     </button>
+                    <!-- Thinking mode ON/OFF — runtime toggle, applies to the next AI call -->
+                    <button @click="toggleThinking" :disabled="thinkingLoading"
+                        class="rounded-full border inline-flex items-center justify-center gap-1 clickable cursor-pointer text-xs w-8 h-8 p-0 shrink-0 transition-colors disabled:opacity-50"
+                        :class="thinkingOn
+                            ? 'border-transparent bg-[var(--Button-primary-black)] text-[var(--text-onblack)]'
+                            : 'border-[var(--border-main)] text-[var(--text-secondary)] hover:bg-[var(--fill-tsp-gray-main)]'"
+                        :title="t('Thinking mode') + ': ' + (thinkingOn ? t('On') : t('Off'))">
+                        <Brain :size="16" />
+                    </button>
                 </div>
                 <div class="flex gap-2">
                     <button v-if="!isRunning || sendEnabled || hideStopButton"
@@ -41,12 +50,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue';
+import { ref, watch, computed, onMounted } from 'vue';
 import SendIcon from './icons/SendIcon.vue';
 import { useI18n } from 'vue-i18n';
 import ChatBoxFiles from './ChatBoxFiles.vue';
-import { Paperclip } from 'lucide-vue-next';
+import { Paperclip, Brain } from 'lucide-vue-next';
 import type { FileInfo } from '../api/file';
+import { getThinkingMode, setThinkingMode } from '../api/config';
+import { showSuccessToast, showErrorToast } from '../utils/toast';
 
 const { t } = useI18n();
 const hasTextInput = ref(false);
@@ -115,6 +126,42 @@ const handleStop = () => {
 
 const uploadFile = () => {
     chatBoxFileListRef.value?.uploadFile();
+};
+
+// ── Thinking mode toggle ────────────────────────────────────────────────
+// Source of truth is the backend (GET /config/thinking, default from the
+// THINKING_MODE env). The choice is global: it applies to every new AI call
+// from any session. Cached in localStorage only so the button can show a
+// state instantly before the backend answers.
+const THINKING_LS_KEY = 'dzeck.thinkingMode';
+const thinkingOn = ref(localStorage.getItem(THINKING_LS_KEY) !== 'off');
+const thinkingLoading = ref(false);
+
+onMounted(async () => {
+    try {
+        const mode = await getThinkingMode();
+        thinkingOn.value = mode === 'on';
+        localStorage.setItem(THINKING_LS_KEY, mode);
+    } catch {
+        // Not logged in yet or endpoint unavailable — keep the cached value.
+    }
+});
+
+const toggleThinking = async () => {
+    if (thinkingLoading.value) return;
+    const next = !thinkingOn.value;
+    thinkingLoading.value = true;
+    try {
+        const mode = await setThinkingMode(next);
+        thinkingOn.value = mode === 'on';
+        localStorage.setItem(THINKING_LS_KEY, mode);
+        showSuccessToast(t('Thinking mode') + ': ' + (thinkingOn.value ? t('On') : t('Off')));
+    } catch (error) {
+        console.error('Failed to toggle thinking mode:', error);
+        showErrorToast(t('Failed to change thinking mode'));
+    } finally {
+        thinkingLoading.value = false;
+    }
 };
 
 watch(() => props.modelValue, (value) => {

@@ -12,6 +12,7 @@ from app.domain.models.event import (
     PlanEvent,
     MessageEvent,
     MessageChunkEvent,
+    ThinkingEvent,
     TitleEvent,
     ToolEvent,
     StepEvent,
@@ -96,6 +97,24 @@ class MessageChunkSSEEvent(BaseSSEEvent):
             data=MessageChunkEventData(
                 **BaseEventData.base_event_data(event),
                 role=event.role,
+                content=event.content,
+                done=event.done,
+            )
+        )
+
+class ThinkingEventData(BaseEventData):
+    content: str
+    done: bool
+
+class ThinkingSSEEvent(BaseSSEEvent):
+    event: Literal["thinking"] = "thinking"
+    data: ThinkingEventData
+
+    @classmethod
+    def from_event(cls, event: ThinkingEvent) -> Self:
+        return cls(
+            data=ThinkingEventData(
+                **BaseEventData.base_event_data(event),
                 content=event.content,
                 done=event.done,
             )
@@ -200,6 +219,7 @@ AgentSSEEvent = Union[
     PlanSSEEvent,
     MessageSSEEvent,
     MessageChunkSSEEvent,
+    ThinkingSSEEvent,
     TitleSSEEvent,
     ToolSSEEvent,
     StepSSEEvent,

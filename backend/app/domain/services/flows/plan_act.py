@@ -25,6 +25,13 @@ from app.domain.models.session import SessionStatus
 from app.domain.services.tools.mcp import MCPToolkit
 from app.domain.services.tools.message import MessageToolkit
 from app.domain.services.tools.search import SearchToolkit
+from app.domain.services.tools.technical import TechnicalToolkit
+from app.domain.services.tools.backtest import BacktestToolkit
+from app.domain.services.tools.risk import PortfolioRiskToolkit
+from app.domain.services.tools.memory import MemoryToolkit
+from app.domain.services.tools.skills_tool import SkillToolkit
+from app.domain.services.tools.committee import CommitteeToolkit
+from app.domain.services.skills import build_skills_block
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -69,6 +76,41 @@ class PlanActFlow(BaseFlow):
         if search_engine:
             tools.append(SearchToolkit(search_engine))
 
+        # Technical indicator computations (ATR / VWAP / EMA / RSI divergence).
+        # Capability only — the agents decide when and with which parameters
+        # to use it; no usage rules are added to any prompt.
+        tools.append(TechnicalToolkit())
+
+        # Strategy backtesting with research-grade metrics (port of
+        # Vibe-Trading's backtest engine idea). The agent picks strategy
+        # families and every parameter per call.
+        tools.append(BacktestToolkit())
+
+        # Portfolio risk analytics (HHI / VaR / ES / beta / correlations).
+        tools.append(PortfolioRiskToolkit())
+
+        # Cross-session persistent memory (Vibe-Trading PersistentMemory port).
+        # Scoped per user; auto-recall happens in the task runner.
+        if settings.memory_enabled:
+            tools.append(MemoryToolkit(
+                session_repository=session_repository,
+                session_id=session_id,
+            ))
+
+        # Self-authored skills (Vibe-Trading skills port): progressive
+        # disclosure — the prompt carries name+description only, the body is
+        # pulled on demand. The agent can also WRITE its own skills.
+        tools.append(SkillToolkit())
+
+        # Investment-committee debate (Vibe-Trading swarm port):
+        # bull vs bear in parallel → risk officer → PM decision. Workers get
+        # the same data toolkits as the main agent plus a shared ground-truth
+        # price block fetched at debate start.
+        tools.append(CommitteeToolkit(
+            data_toolkits=[mcp_tool, TechnicalToolkit(), BacktestToolkit()],
+            agent_id=self._agent_id,
+        ))
+
         # Create planner and execution agents
         self.planner = PlannerAgent(
             agent_id=self._agent_id,
@@ -91,6 +133,14 @@ class PlanActFlow(BaseFlow):
             self.executor.system_prompt = self.executor.system_prompt + extra
             self.planner.system_prompt = self.planner.system_prompt + extra
             logger.debug("extend_system_message injected into executor and planner")
+
+        # Progressive-disclosure skills block — built from disk at agent
+        # construction so newly saved skills appear on the next run.
+        skills_block = build_skills_block()
+        if skills_block:
+            self.executor.system_prompt = self.executor.system_prompt + skills_block
+            self.planner.system_prompt = self.planner.system_prompt + skills_block
+            logger.debug("skills block injected into executor and planner (%s chars)", len(skills_block))
 
     @staticmethod
     def _notification_message(event: BaseEvent) -> Optional[MessageEvent]:
@@ -262,8 +312,8 @@ class PlanActFlow(BaseFlow):
                     self.status = AgentStatus.COMPLETED
                     
             elif self.status == AgentStatus.EXECUTING:
-                # Guard: max total steps across entire task
-                if total_steps_executed >= self._max_steps:
+                # Guard: max total steps across entire task (None = unlimited)
+                if self._max_steps is not None and total_steps_executed >= self._max_steps:
                     logger.warning(
                         f"Agent {self._agent_id} reached max_steps limit ({self._max_steps}), "
                         f"stopping execution to prevent infinite loop"
@@ -299,9 +349,14 @@ class PlanActFlow(BaseFlow):
                     continue
 
                 # Execute step
+                _limit_label = (
+                    f"{total_steps_executed + 1}/{self._max_steps}"
+                    if self._max_steps is not None
+                    else f"#{total_steps_executed + 1}"
+                )
                 logger.info(
                     f"Agent {self._agent_id} executing step {step.id} "
-                    f"[{total_steps_executed + 1}/{self._max_steps}]: {step.description[:60]}..."
+                    f"[{_limit_label}]: {step.description[:60]}..."
                 )
                 waiting_for_user = False
                 async for event in self.executor.execute_step(self.plan, step, message):

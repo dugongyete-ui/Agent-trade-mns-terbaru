@@ -14,7 +14,7 @@ from app.interfaces.dependencies import get_agent_service
 from app.interfaces.api.routes import router
 from app.infrastructure.logging import setup_logging
 from app.interfaces.errors.exception_handlers import register_exception_handlers
-from app.infrastructure.models.documents import AgentDocument, SessionDocument, UserDocument
+from app.infrastructure.models.documents import AgentDocument, SessionDocument, UserDocument, MemoryDocument
 from beanie import init_beanie
 
 # Initialize logging system
@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 
 # Load configuration
 settings = get_settings()
+
+# Seed the runtime thinking (reasoning) flag from THINKING_MODE env default.
+from app.domain.services.agents import thinking_state as _thinking_state
+_thinking_state.init_from_settings()
 
 # Readiness is true only after MongoDB/Beanie and Redis are both initialized.
 _app_ready = False
@@ -38,7 +42,7 @@ async def _init_databases() -> None:
         await get_mongodb().initialize()
         await init_beanie(
             database=get_mongodb().client[settings.mongodb_database],
-            document_models=[AgentDocument, SessionDocument, UserDocument],
+            document_models=[AgentDocument, SessionDocument, UserDocument, MemoryDocument],
         )
         logger.info("Successfully initialized Beanie")
     except Exception as exc:
@@ -117,6 +121,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Rate limiting for auth + chat endpoints (429 on abuse)
+from app.interfaces.middleware.rate_limit import RateLimitMiddleware
+app.add_middleware(RateLimitMiddleware)
+
 # Register exception handlers
 register_exception_handlers(app)
 
@@ -154,8 +162,15 @@ if os.path.exists(_frontend_dist):
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_frontend(full_path: str):
-        target = os.path.join(_frontend_dist, full_path)
-        if full_path and os.path.isfile(target):
+        # Path traversal guard: normalize and confine the resolved path inside
+        # the dist directory. Anything escaping it (../, absolute, symlink-ish
+        # trickery) falls back to index.html instead of leaking files.
+        target = os.path.normpath(os.path.join(_frontend_dist, full_path.lstrip("/")))
+        if (
+            full_path
+            and os.path.isfile(target)
+            and (target == _frontend_dist or target.startswith(_frontend_dist + os.sep))
+        ):
             return FileResponse(target)
         return FileResponse(os.path.join(_frontend_dist, "index.html"))
 else:

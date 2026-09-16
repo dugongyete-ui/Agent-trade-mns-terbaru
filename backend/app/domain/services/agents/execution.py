@@ -12,14 +12,16 @@ from app.domain.models.event import (
     StepStatus,
     ErrorEvent,
     MessageEvent,
-    MessageChunkEvent,
+    ThinkingEvent,
     DoneEvent,
     ToolEvent,
     ToolStatus,
     WaitEvent,
 )
 from app.domain.services.tools.base import BaseToolkit
-from langchain.messages import HumanMessage as LCHumanMessage
+from langchain.messages import HumanMessage as LCHumanMessage, ToolMessage
+from app.domain.services.grounding import EvidenceLedger, GroundingGate
+from app.core.config import get_settings
 import json
 import logging
 
@@ -47,6 +49,11 @@ class ExecutionAgent(BaseAgent):
             tools=tools
         )
         self.market_closed_detected = False
+        # Grounding evidence accumulated across ALL steps of this run.
+        # Collected incrementally from tool events because memory.compact()
+        # pass-3 removes ToolMessages after every step — by summarize time
+        # nothing would be left to verify numbers against.
+        self._grounding_evidence = EvidenceLedger()
 
     def _stop_after_tool_result(self, function_name, tool_result) -> Optional[str]:
         """Stop Forex/Gold execution when the live hours tool says closed."""
@@ -75,6 +82,22 @@ class ExecutionAgent(BaseAgent):
                 "image_url": {"url": f"data:{img.content_type};base64,{img.data}"}
             })
         return content
+
+    def _ingest_grounding_evidence(self, event: ToolEvent) -> None:
+        """Record a successful tool result as grounding evidence (live, pre-compaction)."""
+        try:
+            res = event.function_result
+            if hasattr(res, "model_dump"):
+                payload = res.model_dump()
+            elif isinstance(res, dict):
+                payload = res
+            else:
+                payload = str(res)
+            self._grounding_evidence.ingest_tool_content(
+                event.function_name or event.tool_name or "tool", payload
+            )
+        except Exception as exc:  # noqa: BLE001 — evidence must never break the run
+            logger.debug("grounding evidence ingest skipped: %s", exc)
 
     async def _handle_execution_events(self, step: Step, content) -> AsyncGenerator[BaseEvent, None]:
         async for event in self.execute(content):
@@ -141,6 +164,8 @@ class ExecutionAgent(BaseAgent):
                 )
                 return
             elif isinstance(event, ToolEvent):
+                if event.status == ToolStatus.CALLED and event.function_result is not None:
+                    self._ingest_grounding_evidence(event)
                 if event.function_name == "message_ask_user":
                     if event.status == ToolStatus.CALLING:
                         yield MessageEvent(message=event.function_args.get("text", ""))
@@ -409,30 +434,116 @@ class ExecutionAgent(BaseAgent):
             pass
         return text
 
+    # ── grounding gate (anti-hallucination, port of Vibe-Trading) ────────
+    def _collect_grounding_evidence(self) -> EvidenceLedger:
+        """Ingest every ToolMessage in memory as numeric evidence."""
+        ledger = EvidenceLedger()
+        try:
+            context = list(self.memory.get_messages()) if self.memory else []
+            for msg in context:
+                if isinstance(msg, ToolMessage):
+                    content = msg.content
+                    if isinstance(content, str):
+                        try:
+                            parsed = json.loads(content)
+                        except (json.JSONDecodeError, ValueError):
+                            parsed = content
+                    else:
+                        parsed = content
+                    ledger.ingest_tool_content(getattr(msg, "name", None) or "tool", parsed)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Grounding evidence collection failed: %s", exc)
+        return ledger
+
+    async def _apply_grounding_gate(self, text: str) -> str:
+        """Validate the final summary against session evidence; repair or redact.
+
+        Ladder: validate → up to 2 correction rounds with per-figure feedback →
+        redacted release. Fail-open on any internal error.
+        """
+        try:
+            if not get_settings().grounding_enabled:
+                return text
+            ledger = self._grounding_evidence
+            if len(ledger) == 0:
+                # Fallback: walk memory (covers flows that bypass the event hook)
+                ledger = self._collect_grounding_evidence()
+            if len(ledger) == 0:
+                return text  # pure conversation — nothing to ground against
+            gate = GroundingGate(ledger)
+            result = gate.validate(text)
+            if result.valid:
+                logger.info(
+                    "Grounding gate passed (claims=%s, evidence_records=%s, figures_block=%s)",
+                    result.claim_count, len(ledger), result.figures_present,
+                )
+                return result.released_text or text
+
+            context = list(self.memory.get_messages())
+            max_rounds = 2
+            for round_no in range(1, max_rounds + 1):
+                logger.info(
+                    "Grounding gate rejected summary (round %s/%s, issues=%s)",
+                    round_no, max_rounds, len(result.issues),
+                )
+                for issue in result.issues[:10]:
+                    logger.info("  [grounding] %.4f | %s | %s", issue.value, issue.role, issue.message)
+                correction = gate.correction_prompt(result)
+                try:
+                    repaired = ""
+                    stream_context = context + [LCHumanMessage(content=correction)]
+                    async for chunk in self._current_model().astream(stream_context):
+                        token = chunk.content if isinstance(chunk.content, str) else ""
+                        if token:
+                            repaired += token
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Grounding correction round %s failed: %s", round_no, exc)
+                    break
+                repaired = self._extract_text_from_json(repaired)
+                if not repaired.strip():
+                    break
+                result = gate.validate(repaired)
+                if result.valid:
+                    logger.info("Grounding gate accepted repaired summary (round %s)", round_no)
+                    return result.released_text or repaired
+
+            logger.warning("Grounding gate releasing REDACTED summary (%s unverifiable figures)", len(result.issues))
+            return gate.redact(result.released_text or text, result)
+        except Exception as exc:  # noqa: BLE001 — fail OPEN: never lose the answer
+            logger.exception("Grounding gate error (fail-open): %s", exc)
+            return text
+
     async def summarize(self) -> AsyncGenerator[BaseEvent, None]:
         await self._ensure_memory()
         context = list(self.memory.get_messages())
 
         stream_context = context + [LCHumanMessage(content=SUMMARIZE_STREAM_PROMPT)]
 
-        # Collect the full response without streaming chunks yet.
-        # The execution system prompt tells the model to return JSON, so the
-        # model often returns {"success":true,"result":"..."} even in streaming
-        # mode. We post-process the full text before deciding what to emit.
+        # Single-shot delivery: reasoning (if thinking mode is on) still
+        # streams live into the collapsible Thinking block, but the final
+        # answer is emitted ONCE as a complete MessageEvent instead of
+        # 5-character MessageChunkEvents. This kills the "summary replays
+        # from the beginning chunk-by-chunk after refresh" behaviour: the
+        # persisted event is one whole text, SSE reconnects re-deliver it
+        # instantly, and the event-id dedup makes it idempotent.
         full_text = ""
+        reasoning_text = ""
         try:
-            async for chunk in self._model.astream(stream_context):
+            async for chunk in self._current_model().astream(stream_context):
+                # Live reasoning stream — the frontend renders a collapsible
+                # Thinking block while the model deliberates.
+                reasoning_delta = (getattr(chunk, "additional_kwargs", {}) or {}).get("reasoning_content")
+                if reasoning_delta:
+                    reasoning_text += reasoning_delta
+                    yield ThinkingEvent(content=reasoning_delta, done=False)
                 token = chunk.content if isinstance(chunk.content, str) else ""
                 if token:
                     full_text += token
+            if reasoning_text:
+                yield ThinkingEvent(content=reasoning_text, done=True)
             if full_text:
                 clean_text = self._extract_text_from_json(full_text)
-                # Emit in small chunks so the frontend's RAF buffer creates
-                # a smooth progressive typing effect instead of a single pop-in.
-                _CHUNK = 5
-                for _i in range(0, len(clean_text), _CHUNK):
-                    yield MessageChunkEvent(content=clean_text[_i:_i + _CHUNK], done=False)
-                yield MessageChunkEvent(content="", done=True)
+                clean_text = await self._apply_grounding_gate(clean_text)
                 yield MessageEvent(message=clean_text, source="final")
             return
         except Exception as e:

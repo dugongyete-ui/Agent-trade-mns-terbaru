@@ -23,6 +23,13 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
+# --- legacy mcp SDK compatibility (mcp>=1.27 removed constructor handlers) ---
+import sys as _compat_sys
+from pathlib import Path as _compat_path
+_compat_sys.path.insert(0, str(_compat_path(__file__).resolve().parent.parent))
+from _legacy_mcp_compat import make_server  # noqa: E402
+# -----------------------------------------------------------------------------
+
 DERIV_WS_URL = "wss://ws.binaryws.com/websockets/v3?app_id=1089"
 
 GRAN_LABEL = {
@@ -5444,7 +5451,7 @@ async def _handle_call_tool(_context, params):
     return CallToolResult(content=await call_tool(params.name, params.arguments or {}))
 
 
-app = Server("deriv-mcp", on_list_tools=_handle_list_tools, on_call_tool=_handle_call_tool)
+app = make_server("deriv-mcp", on_list_tools=_handle_list_tools, on_call_tool=_handle_call_tool)
 
 
 async def main():

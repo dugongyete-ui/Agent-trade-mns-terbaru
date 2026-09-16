@@ -34,6 +34,13 @@
       @click="handleMarkdownClick"></div>
   </div>
   <ToolUse v-else-if="message.type === 'tool'" :tool="toolContent" @click="handleToolClick(toolContent)" />
+  <ThinkingBlock
+    v-else-if="message.type === 'thinking'"
+    :content="thinkingContent.content"
+    :is-streaming="thinkingContent.isStreaming"
+    :started-at="thinkingContent.timestamp"
+    :hide-header="hideAssistantHeader"
+  />
   <div v-else-if="message.type === 'step'" class="flex flex-col">
     <div class="text-sm w-full clickable flex gap-2 justify-between group/header truncate text-[var(--text-primary)]"
       data-event-id="HNtP7XOMUOhPemItd2EkK2">
@@ -97,8 +104,9 @@
 
 <script setup lang="ts">
 import DzeckTextIcon from './icons/DzeckTextIcon.vue';
-import { Message, MessageContent, AttachmentsContent } from '../types/message';
+import { Message, MessageContent, AttachmentsContent, ThinkingContent } from '../types/message';
 import ToolUse from './ToolUse.vue';
+import ThinkingBlock from './ThinkingBlock.vue';
 import { marked } from 'marked';
 import { markedHighlight } from 'marked-highlight';
 import hljs from 'highlight.js';
@@ -142,6 +150,7 @@ const stepContent = computed(() => props.message.content as StepContent);
 const messageContent = computed(() => props.message.content as MessageContent);
 const toolContent = computed(() => props.message.content as ToolContent);
 const attachmentsContent = computed(() => props.message.content as AttachmentsContent);
+const thinkingContent = computed(() => props.message.content as ThinkingContent);
 
 const isExpanded = ref(true);
 

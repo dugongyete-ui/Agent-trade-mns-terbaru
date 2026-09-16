@@ -433,7 +433,8 @@ const handleFileListShow = () => {
 
 const handleCopyLink = async () => {
   if (!sessionId.value || !shareToken.value) return;
-  const shareUrl = `${window.location.origin}/share/${encodeURIComponent(sessionId.value)}?token=${encodeURIComponent(shareToken.value)}`;
+  // The share route reads the token from the `n` query param (see restore logic).
+  const shareUrl = `${window.location.origin}/share/${encodeURIComponent(sessionId.value)}?n=${encodeURIComponent(shareToken.value)}`;
 
   try {
     const success = await copyToClipboard(shareUrl);

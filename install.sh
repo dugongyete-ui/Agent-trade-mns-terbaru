@@ -103,8 +103,13 @@ echo "      AI/LLM dependencies installed"
 echo ""
 echo "[4/5] Installing utility dependencies..."
 
+# MCP SDK version is LOCKED to the exact same pin as backend/pyproject.toml.
+# The local MCP servers use mcp-servers/_legacy_mcp_compat.py, which supports
+# the 2.x constructor-kwarg API and the 1.27 decorator API — but mixing a
+# different major between installs is what previously caused 4 MCP servers
+# to crash at startup ("Unknown tool" errors in the UI). Never widen this pin.
 python3 -m pip install $PIP_FLAGS -q \
-  "mcp>=1.9.0"
+  "mcp==2.0.0"
 
 # ── 4a. MCP server dependencies ───────────────────────────────────────────────
 echo "      Installing MCP server dependencies..."
@@ -160,10 +165,74 @@ else
   echo "      backend/.env already exists"
 fi
 
-# ── Done ──────────────────────────────────────────────────────────────────────
+# ── 6. Verification gate (anti-mismatch) ─────────────────────────────────────
+echo ""
+echo "[6/6] Verifying installation..."
+
+python3 - <<'PYVERIFY'
+import importlib, importlib.metadata as im, os, sys
+
+# 1) Critical modules must import (catches venv resets / partial installs)
+critical = [
+    "fastapi", "pymongo", "beanie", "redis", "httpx", "uvicorn",
+    "openai", "langchain", "langchain_classic", "langchain_openai",
+    "tavily", "mcp", "tradingview_screener", "pandas", "openpyxl",
+    "docx", "pptx", "pdfplumber",
+]
+missing = []
+for mod in critical:
+    try:
+        importlib.import_module(mod)
+    except Exception as exc:  # noqa: BLE001
+        missing.append(f"{mod} ({type(exc).__name__})")
+
+if missing:
+    print("VERIFICATION FAILED - missing/broken modules:")
+    for m in missing:
+        print(f"  - {m}")
+    print("Re-run install.sh or install from backend/pyproject.toml.")
+    sys.exit(1)
+
+# 2) mcp SDK must be 2.x (the generation the stack is tested against;
+#    keep this in sync with the "mcp==..." pin in step [4/5] above)
+try:
+    mcp_version = im.version("mcp") or "unknown"
+except Exception:  # noqa: BLE001
+    mcp_version = "unknown"
+if not str(mcp_version).startswith("2."):
+    print(f"VERIFICATION FAILED - mcp SDK is {mcp_version!r}, expected 2.0.0.")
+    print('Run: python3 -m pip install "mcp==2.0.0"')
+    sys.exit(1)
+
+# 3) The MCP-server shim must support this SDK generation
+for cand in ("mcp-servers/_legacy_mcp_compat.py", "../mcp-servers/_legacy_mcp_compat.py"):
+    if os.path.exists(cand):
+        shim = cand
+        break
+else:
+    shim = None
+if shim:
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_shim_check", shim)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    try:
+        srv = mod.make_server(
+            "verify",
+            on_list_tools=lambda c, p: None,
+            on_call_tool=lambda c, p: None,
+        )
+        assert srv is not None
+    except Exception as exc:  # noqa: BLE001
+        print(f"VERIFICATION FAILED - MCP shim incompatible with mcp {mcp_version}: {exc}")
+        sys.exit(1)
+
+print(f"      mcp {mcp_version} OK - all {len(critical)} critical modules import OK")
+PYVERIFY
+
 echo ""
 echo "========================================"
-echo "  Installation complete!"
+echo "  Installation complete & verified!"
 echo ""
 echo "  Start the backend:"
 echo "    cd backend && python3 -m uvicorn app.main:app --host localhost --port 8000"

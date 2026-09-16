@@ -32,11 +32,24 @@ class Tool(BaseTool):
         self.args_schema = create_model_without_fields(tool.args_schema, {'self'})
         self._tool = tool
 
+    def _filter_known_args(self, kwargs: dict) -> dict:
+        """Drop kwargs not declared in the tool schema.
+
+        LLMs often pass plausible-but-unsupported args (e.g. a 'period' hint
+        copied from another tool). Hard-failing the whole call over an ignored
+        hint wastes a full turn; filtering keeps the run alive.
+        """
+        schema = self.args_schema
+        allowed = set(getattr(schema, "model_fields", {}).keys())
+        if not allowed:
+            return kwargs
+        return {k: v for k, v in kwargs.items() if k in allowed}
+
     def _run(self, **kwargs: Any) -> Any:
-        return self._tool.func(self.toolkit, **kwargs)
+        return self._tool.func(self.toolkit, **self._filter_known_args(kwargs))
 
     async def _arun(self, **kwargs: Any) -> Any:
-        return await self._tool.coroutine(self.toolkit, **kwargs)
+        return await self._tool.coroutine(self.toolkit, **self._filter_known_args(kwargs))
 
     async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> ToolMessage:
         """Invoke tool and return a ToolMessage with the raw result stored in artifact."""

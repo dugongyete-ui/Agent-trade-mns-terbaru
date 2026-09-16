@@ -65,8 +65,18 @@ class Settings(BaseSettings):
     planner_api_base: str | None = None
     planner_api_key: str | None = None
 
+    # Thinking (reasoning) mode — env var: THINKING_MODE ("on"/"off", default on)
+    # When on, reasoning models (nvidia/nemotron) emit chain-of-thought that is
+    # streamed to the web UI as a collapsible block. When off, the model is
+    # explicitly told NOT to reason (chat_template_kwargs.thinking=false) and
+    # answers directly — faster and cheaper. Runtime-switchable via
+    # GET/PUT /api/v1/config/thinking.
+    thinking_mode: bool = True
+
     # Agent step limit — env var: MAX_STEPS
-    max_steps: int = Field(default=100, alias="max_steps", ge=1, le=500)
+    # None (default) = UNLIMITED. The agent runs until the plan is complete,
+    # blocked only by max_consecutive_failures and the user's stop button.
+    max_steps: int | None = Field(default=None, alias="max_steps", ge=1)
 
     # How many consecutive failed steps before the loop skips to SUMMARIZING.
     # Increase if tasks involve many optional tool calls that may legitimately fail.
@@ -81,6 +91,19 @@ class Settings(BaseSettings):
     max_filename_length: int = Field(default=255, ge=32, le=1024)
     share_token_expire_days: int = Field(default=7, ge=1, le=30)
     extend_system_message: str | None = None     # extra instructions appended to all agent system prompts
+
+    # Cross-session persistent memory (MongoDB-backed, per user).
+    # env var: MEMORY_ENABLED — when false, the remember tool is not registered
+    # and no recalled-memory block is injected into messages.
+    memory_enabled: bool = True
+
+    # Grounding gate — mechanical anti-hallucination check on the final summary
+    # (env var: GROUNDING_ENABLED). Every decimal/percentage figure must match
+    # a value some tool returned this run, be a declared `derived`/`proposed`
+    # figure with visible arithmetic, or be a visibly `cited` source. Failed
+    # drafts get bounded correction rounds; a still-failing draft is released
+    # with unverifiable figures redacted. Never blocks forever, fail-open.
+    grounding_enabled: bool = True
 
     # Search engine configuration
     search_provider: str | None = "tavily"

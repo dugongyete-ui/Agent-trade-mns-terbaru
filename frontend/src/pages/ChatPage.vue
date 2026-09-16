@@ -107,8 +107,16 @@
             :hideHeader="isConsecutiveAssistant(messages, index)"
             @toolClick="handleToolClick" />
 
-          <!-- Loading indicator — hidden while streaming acknowledgment chunks -->
-          <LoadingIndicator v-if="isLoading && !streamingMessageContent" :text="currentThinkingText || $t('Thinking')" />
+          <!-- Loading indicator — hidden while streaming acknowledgment chunks.
+               Hidden ONLY while the run's Thinking block is ACTIVELY streaming
+               (its orb/shimmer is the animation then). Once thinking collapses
+               ("Proses berpikir Xs") the pill comes back and STAYS visible until
+               the phase changes (tool label, text streaming, run done). It never
+               auto-hides on a timer — a persistent gentle pulse is far better
+               than the agent looking frozen during long silent work phases. -->
+          <LoadingIndicator
+            v-if="isLoading && !streamingMessageContent && (currentThinkingText || !isTurnThinkingStreaming)"
+            :text="currentThinkingText || $t('Thinking')" />
           <!-- Wait indicator — agent is expecting user input -->
           <div v-if="isWaitingForInput && !isLoading"
             class="flex items-center gap-2 px-4 py-2 mx-auto rounded-xl text-sm text-[var(--text-secondary)] bg-[var(--fill-tsp-white-main)] border border-[var(--border-main)] w-fit">
@@ -146,12 +154,13 @@ import { useI18n } from 'vue-i18n';
 import ChatBox from '../components/ChatBox.vue';
 import ChatMessage from '../components/ChatMessage.vue';
 import * as agentApi from '../api/agent';
-import { Message, MessageContent, ToolContent, StepContent, AttachmentsContent, isConsecutiveAssistant } from '../types/message';
+import { Message, MessageContent, ToolContent, StepContent, AttachmentsContent, ThinkingContent, isConsecutiveAssistant } from '../types/message';
 import {
   StepEventData,
   ToolEventData,
   MessageEventData,
   MessageChunkEventData,
+  ThinkingEventData,
   ErrorEventData,
   TitleEventData,
   PlanEventData,
@@ -265,6 +274,8 @@ const resetState = () => {
     cancelAnimationFrame(_chunkRafId);
     _chunkRafId = null;
   }
+  resetTurnThinking();
+  turnRunStartIdx = 0;
   // Cancel any existing chat connection
   if (cancelCurrentChat.value) {
     cancelCurrentChat.value();
@@ -325,6 +336,11 @@ const handleMessageChunkEvent = (chunkData: MessageChunkEventData) => {
       content,
     });
     streamingMessageContent.value = content;
+    // The acknowledgment bubble just appeared BELOW the merged thinking block
+    // (the block streams before any text exists). Re-anchor now so the block
+    // sits directly under the Dzeck header/ack cluster instead of floating
+    // orphaned above the logo for the whole run.
+    positionTurnThinking();
     scheduleScroll();
     return;
   }
@@ -355,11 +371,155 @@ const handleMessageChunkEvent = (chunkData: MessageChunkEventData) => {
   }
 }
 
+// Handle thinking (reasoning) events.
+//
+// ALL reasoning of one task run is merged into ONE collapsible block that
+// sits directly below the first assistant message (the Dzeck logo header).
+// The Plan-Act loop makes many LLM calls per run (plan → ack → every tool
+// round → plan update → summary) and each streams its own reasoning; without
+// merging, the timeline fills with separate "Proses berpikir" rows (spam).
+// A done=true event carries the full text of ONE LLM call — accumulated
+// here with a blank-line separator so refresh/replay stays idempotent.
+let turnThinkingContent: ThinkingContent | null = null;
+let turnThinkingAccum = '';
+let turnRunStartIdx = 0;
+// Reactive mirror of `turnThinkingContent?.isStreaming` — the template needs it
+// to hide the generic LoadingIndicator ONLY while real reasoning is actively
+// streaming (one animation at a time: thinking orb replaces the pill, then the
+// pill returns once thinking collapses).
+const isTurnThinkingStreaming = ref(false);
+let _thinkingBuffer = '';
+let _thinkingRafId: number | null = null;
+
+const _flushThinkingBuffer = () => {
+  _thinkingRafId = null;
+  if (_thinkingBuffer && turnThinkingContent) {
+    turnThinkingContent.content += _thinkingBuffer;
+    _thinkingBuffer = '';
+    scheduleScroll();
+  }
+};
+
+const resetTurnThinking = () => {
+  turnThinkingContent = null;
+  turnThinkingAccum = '';
+  isTurnThinkingStreaming.value = false;
+  _thinkingBuffer = '';
+  if (_thinkingRafId !== null) {
+    cancelAnimationFrame(_thinkingRafId);
+    _thinkingRafId = null;
+  }
+};
+
+// Move the merged thinking block right AFTER the first assistant message of
+// the current run, so it renders just below the Dzeck logo header instead of
+// floating above it (the first reasoning usually streams BEFORE the
+// acknowledgment text exists).
+const positionTurnThinking = () => {
+  if (!turnThinkingContent) return;
+  const blockIdx = messages.value.findIndex(
+    m => m.type === 'thinking' && (m.content as ThinkingContent) === turnThinkingContent
+  );
+  if (blockIdx === -1) return;
+  let anchor = -1;
+  for (let i = turnRunStartIdx; i < messages.value.length; i++) {
+    if (messages.value[i].type === 'assistant') { anchor = i; break; }
+  }
+  if (anchor === -1 || blockIdx > anchor) return;
+  messages.value.splice(blockIdx, 1);
+  // Removing the block shifted the anchor left by one when it sat after it.
+  messages.value.splice(anchor, 0, { type: 'thinking', content: turnThinkingContent } as Message);
+};
+
+const ensureTurnThinking = (timestamp?: number): ThinkingContent => {
+  if (!turnThinkingContent) {
+    // ADOPT an orphaned thinking block of the current run instead of spawning
+    // a duplicate. Blocks can be orphaned when a reconnect/replay resets the
+    // pointer mid-run (page refresh mid-task): the block rendered from the
+    // replayed history is real and must keep receiving the live reasoning.
+    for (let i = messages.value.length - 1; i >= turnRunStartIdx; i--) {
+      const m = messages.value[i];
+      if (m.type === 'thinking') {
+        turnThinkingContent = m.content as ThinkingContent;
+        // Sync the run accumulator so the next done=True event APPENDS to the
+        // adopted text instead of replacing it.
+        turnThinkingAccum = turnThinkingContent.content || '';
+        break;
+      }
+    }
+  }
+  if (!turnThinkingContent) {
+    turnThinkingContent = {
+      content: turnThinkingAccum,
+      event_id: `local-thinking-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+      timestamp: timestamp ?? Math.floor(Date.now() / 1000),
+      isStreaming: true,
+    } as ThinkingContent;
+    messages.value.push({ type: 'thinking', content: turnThinkingContent });
+    positionTurnThinking();
+  }
+  return turnThinkingContent;
+};
+
+const handleThinkingEvent = (data: ThinkingEventData) => {
+  // Ignore a done event with no text when no block exists yet (defensive —
+  // keeps thinking-OFF / non-reasoning providers from producing empty rows).
+  if (data.done && !data.content && !turnThinkingContent) return;
+
+  const block = ensureTurnThinking(data.timestamp);
+
+  if (data.done) {
+    if (_thinkingRafId !== null) {
+      cancelAnimationFrame(_thinkingRafId);
+      _thinkingRafId = null;
+    }
+    _thinkingBuffer = '';
+    // done=true carries the authoritative full text of this LLM call —
+    // append it to the run accumulator (replaces the streamed deltas).
+    turnThinkingAccum = turnThinkingAccum
+      ? `${turnThinkingAccum}\n\n${data.content || ''}`.trim()
+      : (data.content || '');
+    block.content = turnThinkingAccum;
+    // Keep the block in place — the next LLM call of this run re-streams
+    // into the same collapsible instead of creating a new one.
+    block.isStreaming = false;
+    // Thinking phase over — hand the "thinking animation" back to the
+    // generic loading pill so the agent never appears idle mid-run.
+    isTurnThinkingStreaming.value = false;
+    scheduleScroll();
+    return;
+  }
+
+  block.isStreaming = true;
+  // Reasoning is live — the Thinking block's orb/shimmer is now THE single
+  // thinking animation; suppress the generic pill to avoid a duplicate.
+  isTurnThinkingStreaming.value = true;
+  _thinkingBuffer += data.content;
+  if (_thinkingRafId === null) {
+    _thinkingRafId = requestAnimationFrame(_flushThinkingBuffer);
+  }
+};
+
 // Handle message event
 const handleMessageEvent = (messageData: MessageEventData) => {
   // Per-step evidence is already represented by the step/tool panel and is
   // consumed by summarization. Do not add a second assistant bubble for it.
   if (messageData.source === 'step_result') return;
+
+  // A persisted user message marks the start of a new run — begin a fresh
+  // merged thinking block after it (page-reload replay path).
+  if (messageData.role === 'user') {
+    resetTurnThinking();
+    messages.value.push({
+      type: 'user',
+      content: {
+        ...messageData,
+        event_id: messageData.event_id,
+      } as MessageContent,
+    });
+    turnRunStartIdx = messages.value.length;
+    return;
+  }
 
   // Progress notifications belong inside the active step, matching the
   // Manus-style timeline. Keep a bubble only as a safe fallback when the
@@ -382,6 +542,12 @@ const handleMessageEvent = (messageData: MessageEventData) => {
       event_id: messageData.event_id,
     } as MessageContent,
   });
+
+  // An assistant bubble just appeared (ack / direct answer / final summary) —
+  // re-anchor the merged thinking block directly below the Dzeck header.
+  if (messageData.role === 'assistant') {
+    positionTurnThinking();
+  }
 
   if (messageData.attachments?.length > 0) {
     messages.value.push({
@@ -562,6 +728,8 @@ const handleEvent = (event: AgentSSEEvent) => {
     handleMessageEvent(event.data as MessageEventData);
   } else if (event.event === 'message_chunk') {
     handleMessageChunkEvent(event.data as MessageChunkEventData);
+  } else if (event.event === 'thinking') {
+    handleThinkingEvent(event.data as ThinkingEventData);
   } else if (event.event === 'tool') {
     handleToolEvent(event.data as ToolEventData);
   } else if (event.event === 'step') {
@@ -591,7 +759,7 @@ const handleSubmit = () => {
   chat(inputMessage.value, attachments.value);
 }
 
-const chat = async (message: string = '', files: FileInfo[] = []) => {
+const chat = async (message: string = '', files: FileInfo[] = [], isReconnect = false) => {
   if (!sessionId.value) return;
 
   // Cancel any existing chat connection before starting a new one
@@ -619,6 +787,16 @@ const chat = async (message: string = '', files: FileInfo[] = []) => {
         attachments: files
       } as AttachmentsContent,
     });
+  }
+
+  // New run begins — start a fresh merged thinking block anchored after this
+  // user message (previous run's block stays in the transcript, collapsed).
+  // On a RECONNECT (restore after refresh, no new user message) keep the
+  // thinking state: the replayed history already created this run's block and
+  // live reasoning deltas must continue streaming INTO it, not into a clone.
+  if (!isReconnect) {
+    resetTurnThinking();
+    turnRunStartIdx = messages.value.length;
   }
 
   // Automatically enable follow mode when sending message
@@ -710,7 +888,8 @@ const restoreSession = async () => {
   // "Thinking..." indicator.
   const hasDoneEvent = session.events.some((e: { event: string }) => e.event === 'done');
   if (!hasDoneEvent && (session.status === SessionStatus.RUNNING || session.status === SessionStatus.PENDING)) {
-    await chat();
+    // Reconnect — do NOT reset the thinking block adopted during replay.
+    await chat('', [], true);
   }
   agentApi.clearUnreadMessageCount(sessionId.value);
 }
@@ -867,10 +1046,15 @@ const handleInstantShare = async () => {
 
 const handleCopyLink = async () => {
   if (!sessionId.value) return;
-  
-  const shareUrl = `${window.location.origin}/share/${sessionId.value}`;
-  
+
+  sharingLoading.value = true;
   try {
+    // (Re)share to obtain a valid share token — the share page requires the
+    // token as the `n` query param, without it the link 404s for viewers.
+    const share = await agentApi.shareSession(sessionId.value);
+    const shareUrl = share.share_token
+      ? `${window.location.origin}/share/${sessionId.value}?n=${encodeURIComponent(share.share_token)}`
+      : `${window.location.origin}/share/${sessionId.value}`;
     const success = await copyToClipboard(shareUrl);
     
     if (success) {
@@ -885,6 +1069,8 @@ const handleCopyLink = async () => {
   } catch (error) {
     console.error('Error copying share link:', error);
     showErrorToast(t('Failed to copy link'));
+  } finally {
+    sharingLoading.value = false;
   }
 }
 </script>

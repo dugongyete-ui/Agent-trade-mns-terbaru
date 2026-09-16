@@ -1,6 +1,6 @@
 import type { FileInfo } from '../api/file';
 
-export type MessageType = "user" | "assistant" | "tool" | "step" | "attachments";
+export type MessageType = "user" | "assistant" | "tool" | "step" | "thinking" | "attachments";
 
 export interface Message {
   type: MessageType;
@@ -16,6 +16,11 @@ export interface BaseContent {
 export interface MessageContent extends BaseContent {
   content: string;
   isStreaming?: boolean;
+}
+
+export interface ThinkingContent extends BaseContent {
+  content: string;
+  isStreaming: boolean;
 }
 
 export interface ToolContent extends BaseContent {
